@@ -1,0 +1,10 @@
+# Files the mod and settings window write at runtime
+status.txt
+itemlimit_status.txt
+capture_request.txt
+capture_result.txt
+config.ini.tmp
+dev/
+
+# Build output
+*.zip
