@@ -12,7 +12,8 @@ It comes with a settings window, and changes apply in game within about a second
 **Field**
 - Turn random encounters on or off (story and fixed battles still happen)
 - Encounter rate from 0.1x to 5x
-- Chest and item markers on the minimap and world map (looted ones are hidden), based on
+- Chest and item markers on the minimap and world map (looted ones are hidden), hidden paths shown on the map,
+  and exits marked when the area behind them still has loot, based on
   [Item and Chest Markers](https://www.nexusmods.com/finalfantasyresonance/mods/25) by ZArkadia
 
 **Battle rewards**
@@ -70,7 +71,7 @@ To reopen the settings window, run `FFRS_QoL_Settings.bat`, or right-click `Sett
 
 ### Uninstall
 
-Delete `FFRS\Binaries\Win64\ue4ss\Mods\FFRS_QoL` and the three `FFRS\Content\Paks\~mods\zzz_TreasureMinimap_P.*` files (map markers).
+Delete `FFRS\Binaries\Win64\ue4ss\Mods\FFRS_QoL` and the `FFRS\Content\Paks\~mods\zzz_TreasureMinimap_P.*` and `zzz_RevealHiddenAreas_P.*` files (map markers).
 To remove UE4SS too, delete `FFRS\Binaries\Win64\dwmapi.dll` and the `ue4ss` folder.
 Saves are not touched. If you raised the AP limit, set it back to 0 and load your save once first.
 
@@ -88,12 +89,14 @@ file can get a false positive. Everything else works without it.
 ```
 mod/FFRS/Content/Paks/~mods/
   zzz_TreasureMinimap_P.*     map marker pak (by ZArkadia)
+  zzz_RevealHiddenAreas_P.*   shows hidden paths on the map (by ZArkadia)
 mod/FFRS/Binaries/Win64/ue4ss/
   UE4SS-settings.ini          UE4SS config for this game
   Mods/FFRS_QoL/
     Scripts/main.lua          the mod (UE4SS Lua)
     Scripts/markers.lua       map markers (based on ZArkadia's Item and Chest Markers)
     Scripts/field_items.lua   shining-spot list for the map markers (by ZArkadia)
+    Scripts/chest_items.lua   chest list for the map markers (by ZArkadia)
     Settings.ps1              settings window (WinForms), edits config.ini
     ItemLimit.ps1             item carry limit patcher (optional)
     FFRS_QoL_Settings.bat     opens the settings window
@@ -105,7 +108,7 @@ mod/FFRS/Binaries/Win64/ue4ss/
 
 - [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) team (MIT license). The all-in-one zip includes the UE4SS binaries from the official release and their license.
 - ZArkadia for [Item and Chest Markers (Including World Map)](https://www.nexusmods.com/finalfantasyresonance/mods/25):
-  the map marker pak, the shining-spot list and the marker logic that `markers.lua` is based on, used and modified with
+  the map marker paks, the shining-spot and chest lists and the marker logic that `markers.lua` is based on, used and modified with
   credit as that mod's permissions allow. Those files are not covered by this repository's MIT license.
 
 ## License
