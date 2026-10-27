@@ -9,9 +9,11 @@ It comes with a settings window, and changes apply in game within about a second
 
 ## Features
 
-**Encounters**
+**Field**
 - Turn random encounters on or off (story and fixed battles still happen)
 - Encounter rate from 0.1x to 5x
+- Chest and item markers on the minimap and world map (looted ones are hidden), based on
+  [Item and Chest Markers](https://www.nexusmods.com/finalfantasyresonance/mods/25) by ZArkadia
 
 **Battle rewards**
 - EXP, Gil, MR point and AP multipliers (0–10x)
@@ -21,12 +23,17 @@ It comes with a settings window, and changes apply in game within about a second
 - Battle speed multiplier (stacks with the game's own 1 / 1.5 / 2x)
 - Escape always succeeds (not for bosses or story battles)
 - Repeat last command / auto repeat: a simple auto battle that reuses each character's last command (the PC version has no auto battle)
+  - Whole W turns (W-Arm and similar) are repeated as one, with MP checked at the real cost; if MP runs short it falls back to the character's last single action
+  - Attacks always go to a living enemy and support skills to allies, even if the recorded target was a party member
+  - Characters who are confused, charmed or berserk are left to you, and what they do is not recorded
 - Smart targeting for support skills: heals go to the lowest-HP ally, buffs go to allies that don't have them yet
+- Limit Burst gain multiplier (0–10x) and an option to keep each character's LB gauge between battles
 - On-screen notices: an "Auto repeat ON" badge in battle and short messages for hotkeys
 
 **Items and abilities**
+- Add items: search any consumable, material or equipment in the settings window and add it to your inventory (key items are left out)
 - Ability AP limit bonus for every character (applies after loading a save)
-- Item carry limit up to 9999 (`ItemLimit.ps1`, see [Antivirus note](#antivirus-note))
+- Item carry limit up to 9999 (`ItemLimit.ps1`, see [Antivirus note](#antivirus-note)); shops let you buy past 99 too
 
 Defaults: encounters on, EXP 2x, Gil 2x, everything else vanilla.
 
@@ -63,13 +70,15 @@ To reopen the settings window, run `FFRS_QoL_Settings.bat`, or right-click `Sett
 
 ### Uninstall
 
-Delete `FFRS\Binaries\Win64\ue4ss\Mods\FFRS_QoL`. To remove UE4SS too, delete `FFRS\Binaries\Win64\dwmapi.dll` and the `ue4ss` folder.
+Delete `FFRS\Binaries\Win64\ue4ss\Mods\FFRS_QoL` and the three `FFRS\Content\Paks\~mods\zzz_TreasureMinimap_P.*` files (map markers).
+To remove UE4SS too, delete `FFRS\Binaries\Win64\dwmapi.dll` and the `ue4ss` folder.
 Saves are not touched. If you raised the AP limit, set it back to 0 and load your save once first.
 
 ## Antivirus note
 
 `ItemLimit.ps1` raises the 99 item cap. The game hardcodes 99 in its code, so the script opens
 `FFRS-Win64-Shipping.exe`, checks 14 known spots for the original bytes, and rewrites only those spots in memory.
+It also raises the two 99s in the shop's buy dialog (in the loaded Blueprint's bytecode, checked the same way).
 It never changes files on disk and skips anything that doesn't match (for example after a game update).
 Some antivirus engines (mostly BitDefender-based) flag any script that writes another program's memory, so this
 file can get a false positive. Everything else works without it.
@@ -77,10 +86,14 @@ file can get a false positive. Everything else works without it.
 ## Repository layout
 
 ```
+mod/FFRS/Content/Paks/~mods/
+  zzz_TreasureMinimap_P.*     map marker pak (by ZArkadia)
 mod/FFRS/Binaries/Win64/ue4ss/
   UE4SS-settings.ini          UE4SS config for this game
   Mods/FFRS_QoL/
     Scripts/main.lua          the mod (UE4SS Lua)
+    Scripts/markers.lua       map markers (based on ZArkadia's Item and Chest Markers)
+    Scripts/field_items.lua   shining-spot list for the map markers (by ZArkadia)
     Settings.ps1              settings window (WinForms), edits config.ini
     ItemLimit.ps1             item carry limit patcher (optional)
     FFRS_QoL_Settings.bat     opens the settings window
@@ -91,6 +104,9 @@ mod/FFRS/Binaries/Win64/ue4ss/
 ## Credits
 
 - [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) team (MIT license). The all-in-one zip includes the UE4SS binaries from the official release and their license.
+- ZArkadia for [Item and Chest Markers (Including World Map)](https://www.nexusmods.com/finalfantasyresonance/mods/25):
+  the map marker pak, the shining-spot list and the marker logic that `markers.lua` is based on, used and modified with
+  credit as that mod's permissions allow. Those files are not covered by this repository's MIT license.
 
 ## License
 
@@ -102,8 +118,11 @@ mod/FFRS/Binaries/Win64/ue4ss/
 
 FINAL FANTASY RESONANCE（Steam PC 版）便利功能 MOD，基于 UE4SS，带中英文图形设置窗口，改完约 1 秒内生效。
 
-**功能**：开关随机遇敌 / 遇敌频率（0.1–5 倍）、经验 / 金钱 / MR / AP 倍率、掉落率倍率和稀有物品必掉、战斗加速、逃跑必定成功、
-重复上次指令 / 自动重复（简易自动战斗）、辅助技能智能选目标、能力 AP 上限加成、物品持有上限最高 9999。
+**功能**：开关随机遇敌 / 遇敌频率（0.1–5 倍）、宝箱和道具地图标记、经验 / 金钱 / MR / AP 倍率、掉落率倍率和稀有物品必掉、
+战斗加速、逃跑必定成功、重复上次指令 / 自动重复（简易自动战斗，支持 W 臂腕，混乱时交给玩家，攻击只打敌人）、辅助技能智能选目标、
+LB 充能倍率 / LB 槽跨战斗保留、添加物品、能力 AP 上限加成、物品持有上限最高 9999（商店也能买超过 99）。
+
+地图标记基于 ZArkadia 的 [Item and Chest Markers](https://www.nexusmods.com/finalfantasyresonance/mods/25)，经其许可规定署名使用。
 
 **下载**：在 [Releases](https://github.com/LeiGaoRobot/FFRS-QoL/releases) 下载 `FFRS_QoL_v*_all-in-one_ZH.zip`（整合包，自带 UE4SS，解压即用）。
 
