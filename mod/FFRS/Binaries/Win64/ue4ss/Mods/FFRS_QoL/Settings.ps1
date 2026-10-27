@@ -57,6 +57,9 @@ $Defaults = [ordered]@{
     AlwaysEscape       = '0'
     ItemLimit          = '99'
     APCapacityBonus    = '0'
+    MapMarkers         = '1'
+    LBGainMultiplier   = '1.00'
+    PersistentLB       = '0'
     AutoRepeat         = '0'
     SmartSupport       = '1'
     AutoOpenSettings   = '1'
@@ -150,7 +153,7 @@ $form.AutoScaleDimensions = New-Object System.Drawing.SizeF(96, 96)
 $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
 $form.Text = $WinTitle
 $form.Font = $font
-$form.ClientSize = New-Object System.Drawing.Size(1000, 744)
+$form.ClientSize = New-Object System.Drawing.Size(1000, 778)
 $form.FormBorderStyle = 'FixedSingle'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
@@ -202,12 +205,19 @@ $header.Controls.Add($statusDetail)
 
 # Encounters
 $grpEnc = New-Object System.Windows.Forms.GroupBox
-$grpEnc.Text = T '遇敌' 'Encounters'; $grpEnc.Location = New-Object System.Drawing.Point(12, 98)
+$grpEnc.Text = T '地图' 'Field'; $grpEnc.Location = New-Object System.Drawing.Point(12, 98)
 $grpEnc.Size = New-Object System.Drawing.Size(520, 118)
 $chkEnc = New-Object System.Windows.Forms.CheckBox
 $chkEnc.Text = T '启用随机遇敌' 'Random encounters'
-$chkEnc.Location = New-Object System.Drawing.Point(14, 24); $chkEnc.Size = New-Object System.Drawing.Size(440, 26)
+$chkEnc.Location = New-Object System.Drawing.Point(14, 24); $chkEnc.Size = New-Object System.Drawing.Size(220, 26)
 $grpEnc.Controls.Add($chkEnc)
+$chkMarkers = New-Object System.Windows.Forms.CheckBox
+$chkMarkers.Text = T '宝箱、道具地图标记' 'Chest/item map markers'
+$chkMarkers.Location = New-Object System.Drawing.Point(250, 24); $chkMarkers.Size = New-Object System.Drawing.Size(260, 26)
+$grpEnc.Controls.Add($chkMarkers)
+$tips = New-Object System.Windows.Forms.ToolTip
+$tips.AutoPopDelay = 15000
+$tips.SetToolTip($chkMarkers, (T "在小地图和世界地图上标出宝箱、闪光道具点（拿过的自动隐藏），敌人显示为怪物图标。`n基于 ZArkadia 的 Item and Chest Markers（Nexus Mods）。" "Shows chests and shining item spots on the minimap and world map (hidden once looted), and enemies as monster icons.`nBased on Item and Chest Markers by ZArkadia (Nexus Mods)."))
 $grpEnc.Controls.Add((New-Label (T '频率' 'Rate') 32 52 80 26))
 $nuEncRate = New-Object System.Windows.Forms.NumericUpDown
 $nuEncRate.Minimum = 0.1; $nuEncRate.Maximum = 5; $nuEncRate.DecimalPlaces = 2; $nuEncRate.Increment = 0.25
@@ -224,7 +234,7 @@ $form.Controls.Add($grpEnc)
 # Battle
 $grpBattle = New-Object System.Windows.Forms.GroupBox
 $grpBattle.Text = T '战斗' 'Battle'; $grpBattle.Location = New-Object System.Drawing.Point(12, 224)
-$grpBattle.Size = New-Object System.Drawing.Size(520, 118)
+$grpBattle.Size = New-Object System.Drawing.Size(520, 152)
 $form.Controls.Add($grpBattle)
 $grpBattle.Controls.Add((New-Label (T '战斗速度' 'Speed') 14 28 96 26))
 $nuSpeed = New-Object System.Windows.Forms.NumericUpDown
@@ -241,10 +251,24 @@ $grpBattle.Controls.Add($chkEscape)
 $escHint = New-Label (T '只对允许逃跑的战斗生效；Boss 战、剧情战不受影响' 'Only where fleeing is allowed; not bosses or story battles') 32 88 480 22
 $escHint.ForeColor = $grey
 $grpBattle.Controls.Add($escHint)
+$grpBattle.Controls.Add((New-Label (T 'LB 充能' 'LB gain') 14 116 96 26))
+$nuLB = New-Object System.Windows.Forms.NumericUpDown
+$nuLB.Minimum = 0; $nuLB.Maximum = 10; $nuLB.DecimalPlaces = 1; $nuLB.Increment = 0.5
+$nuLB.Location = New-Object System.Drawing.Point(112, 118); $nuLB.Size = New-Object System.Drawing.Size(74, 26)
+$grpBattle.Controls.Add($nuLB)
+$lbHint = New-Label (T '倍' 'x') 192 116 40 26
+$lbHint.ForeColor = $grey
+$grpBattle.Controls.Add($lbHint)
+$chkLBKeep = New-Object System.Windows.Forms.CheckBox
+$chkLBKeep.Text = T 'LB 槽跨战斗保留' 'Keep LB between battles'
+$chkLBKeep.Location = New-Object System.Drawing.Point(250, 116); $chkLBKeep.Size = New-Object System.Drawing.Size(260, 26)
+$grpBattle.Controls.Add($chkLBKeep)
+$tips.SetToolTip($nuLB, (T "所有极限技槽增加量的倍率：受伤、攻击、爆击、击倒、击溃、自动蓄力等（被动和招式）。`n消耗 LB 的效果不受影响。下一场战斗起生效。" "Multiplies every Limit Burst gain: taking damage, attacks, crits, kills, breaks, auto charge (passives and skills).`nLB costs are unchanged. Applies from the next battle."))
+$tips.SetToolTip($chkLBKeep, (T "战斗结束时的 LB 槽带到下一场战斗（关游戏后也保留）。" "Carries each character's LB gauge into the next battle (kept after closing the game)."))
 
 # Repeat last command (right column, below the multipliers)
 $grpRep = New-Object System.Windows.Forms.GroupBox
-$grpRep.Text = T '重复上次指令' 'Repeat last command'; $grpRep.Location = New-Object System.Drawing.Point(12, 350)
+$grpRep.Text = T '重复上次指令' 'Repeat last command'; $grpRep.Location = New-Object System.Drawing.Point(12, 384)
 $grpRep.Size = New-Object System.Drawing.Size(520, 146)
 $form.Controls.Add($grpRep)
 $chkRepeat = New-Object System.Windows.Forms.CheckBox
@@ -264,7 +288,7 @@ $grpRep.Controls.Add($smartHint)
 
 # Items (right column, bottom)
 $grpItem = New-Object System.Windows.Forms.GroupBox
-$grpItem.Text = T '物品与能力' 'Items and abilities'; $grpItem.Location = New-Object System.Drawing.Point(544, 364)
+$grpItem.Text = T '物品与能力' 'Items and abilities'; $grpItem.Location = New-Object System.Drawing.Point(544, 398)
 $grpItem.Size = New-Object System.Drawing.Size(444, 132)
 $form.Controls.Add($grpItem)
 $grpItem.Controls.Add((New-Label (T '持有上限' 'Carry limit') 14 26 96 26))
@@ -296,7 +320,7 @@ $grpItem.Controls.Add($apHint)
 # Multipliers (right column)
 $grpMul = New-Object System.Windows.Forms.GroupBox
 $grpMul.Text = T '战斗奖励倍率（0 – 10 倍）' 'Battle reward multipliers (0 – 10x)'; $grpMul.Location = New-Object System.Drawing.Point(544, 98)
-$grpMul.Size = New-Object System.Drawing.Size(444, 258)
+$grpMul.Size = New-Object System.Drawing.Size(444, 292)
 $form.Controls.Add($grpMul)
 
 $sliders = @{}
@@ -320,7 +344,7 @@ foreach ($r in $rows) {
     $nu.Location = New-Object System.Drawing.Point(360, ($y + 4)); $nu.Size = New-Object System.Drawing.Size(70, 26)
     $grpMul.Controls.Add($tb); $grpMul.Controls.Add($nu)
     $sliders[$r.Key] = $tb; $spinners[$r.Key] = $nu
-    $y += 36
+    $y += 42
 }
 
 $dropHint = New-Label (T '掉落概率 × 倍率，最高 100%' 'Drop chance × multiplier, max 100%') 112 ($y - 4) 360 24
@@ -334,7 +358,7 @@ $grpMul.Controls.Add($chkRare)
 
 # Hotkeys: one row per action, keyboard key + gamepad binding
 $grpKey = New-Object System.Windows.Forms.GroupBox
-$grpKey.Text = T '快捷键' 'Hotkeys'; $grpKey.Location = New-Object System.Drawing.Point(12, 504)
+$grpKey.Text = T '快捷键' 'Hotkeys'; $grpKey.Location = New-Object System.Drawing.Point(12, 538)
 $grpKey.Size = New-Object System.Drawing.Size(976, 182)
 $form.Controls.Add($grpKey)
 
@@ -394,19 +418,19 @@ $grpKey.Controls.Add($padHint2)
 
 $chkAuto = New-Object System.Windows.Forms.CheckBox
 $chkAuto.Text = T '启动游戏时自动打开此窗口' 'Open with the game'
-$chkAuto.Location = New-Object System.Drawing.Point(16, 704); $chkAuto.Size = New-Object System.Drawing.Size(330, 26)
+$chkAuto.Location = New-Object System.Drawing.Point(16, 738); $chkAuto.Size = New-Object System.Drawing.Size(330, 26)
 $form.Controls.Add($chkAuto)
 
 # Buttons
 $btnReset = New-Object System.Windows.Forms.Button
-$btnReset.Text = T '恢复默认' 'Defaults'; $btnReset.Location = New-Object System.Drawing.Point(700, 700)
+$btnReset.Text = T '恢复默认' 'Defaults'; $btnReset.Location = New-Object System.Drawing.Point(700, 734)
 $btnReset.Size = New-Object System.Drawing.Size(104, 32)
 $form.Controls.Add($btnReset)
 $btnFolder = New-Object System.Windows.Forms.Button
-$btnFolder.Text = T '打开 mod 文件夹' 'Open mod folder'; $btnFolder.Location = New-Object System.Drawing.Point(812, 700)
+$btnFolder.Text = T '打开 mod 文件夹' 'Open mod folder'; $btnFolder.Location = New-Object System.Drawing.Point(812, 734)
 $btnFolder.Size = New-Object System.Drawing.Size(176, 32)
 $form.Controls.Add($btnFolder)
-$saveLabel = New-Label '' 350 704 300 26
+$saveLabel = New-Label '' 350 738 300 26
 $saveLabel.TextAlign = 'MiddleLeft'; $saveLabel.ForeColor = $grey
 $form.Controls.Add($saveLabel)
 
@@ -419,6 +443,9 @@ function Show-Config($cfg) {
     $li = [array]::IndexOf($LangCodes, ([string]$cfg.UILanguage).ToLower()); if ($li -lt 0) { $li = 0 }
     $cbLang.SelectedIndex = $li
     $chkEnc.Checked = ($cfg.EncountersEnabled -eq '1' -or $cfg.EncountersEnabled -eq 'true')
+    $chkMarkers.Checked = ($cfg.MapMarkers -ne '0' -and $cfg.MapMarkers -ne 'false')
+    $nuLB.Value = To-Decimal $cfg.LBGainMultiplier ([decimal]1)
+    $chkLBKeep.Checked = ($cfg.PersistentLB -eq '1' -or $cfg.PersistentLB -eq 'true')
     $er = [decimal]1; [void][decimal]::TryParse([string]$cfg.EncounterRate, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$er)
     $nuEncRate.Value = [Math]::Min([decimal]5, [Math]::Max([decimal]0.1, [Math]::Round($er, 2)))
     foreach ($r in $rows) {
@@ -456,6 +483,9 @@ function Show-Config($cfg) {
 function Collect-Config {
     $cfg = [ordered]@{}
     $cfg.EncountersEnabled  = if ($chkEnc.Checked) { '1' } else { '0' }
+    $cfg.MapMarkers         = if ($chkMarkers.Checked) { '1' } else { '0' }
+    $cfg.LBGainMultiplier   = $nuLB.Value.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+    $cfg.PersistentLB       = if ($chkLBKeep.Checked) { '1' } else { '0' }
     $cfg.EncounterRate      = $nuEncRate.Value.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
     $cfg.UILanguage         = $LangCodes[[Math]::Max(0, $cbLang.SelectedIndex)]
     foreach ($r in $rows) { $cfg[$r.Key] = $spinners[$r.Key].Value.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture) }
@@ -510,6 +540,9 @@ function Request-Save {
 }
 
 $chkEnc.Add_CheckedChanged({ Request-Save })
+$chkMarkers.Add_CheckedChanged({ Request-Save })
+$nuLB.Add_ValueChanged({ Request-Save })
+$chkLBKeep.Add_CheckedChanged({ Request-Save })
 $nuEncRate.Add_ValueChanged({ Request-Save })
 $chkRare.Add_CheckedChanged({ Request-Save })
 $chkAuto.Add_CheckedChanged({ Request-Save })

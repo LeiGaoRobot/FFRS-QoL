@@ -8,3 +8,4 @@ dev/
 
 # Build output
 *.zip
+lb_state.txt

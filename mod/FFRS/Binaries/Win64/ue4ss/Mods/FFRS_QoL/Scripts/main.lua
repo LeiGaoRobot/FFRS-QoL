@@ -58,6 +58,9 @@ local Defaults = {
     AlwaysEscape       = false,
     ItemLimit          = 99,
     APCapacityBonus    = 0,
+    MapMarkers         = true,
+    LBGainMultiplier   = 1.0,
+    PersistentLB       = false,
     AutoRepeat         = false,
     SmartSupport       = true,
     AutoOpenSettings   = true,
@@ -73,7 +76,7 @@ local Defaults = {
     CyclePresets       = "1,2,3,5",
 }
 local Order = { "EncountersEnabled", "EncounterRate", "ExpMultiplier", "MoneyMultiplier", "MRPointMultiplier", "DropMultiplier",
-                "RareAlwaysDrop", "APMultiplier", "BattleSpeedMultiplier", "AlwaysEscape", "ItemLimit", "APCapacityBonus", "AutoRepeat", "SmartSupport",
+                "RareAlwaysDrop", "APMultiplier", "BattleSpeedMultiplier", "AlwaysEscape", "ItemLimit", "APCapacityBonus", "MapMarkers", "LBGainMultiplier", "PersistentLB", "AutoRepeat", "SmartSupport",
                 "AutoOpenSettings", "UILanguage", "ToggleEncounterKey", "CycleMultiplierKey", "AutoRepeatKey", "RepeatCommandKey",
                 "ToggleEncounterPad", "CycleMultiplierPad", "RepeatCommandPad", "AutoRepeatPad",
                 "CyclePresets" }
@@ -184,10 +187,12 @@ end
 
 -- One scan of all DataTables per apply, grouped by row struct name.
 local Wanted = { GAME_DIFFICULTY_PARAM = true, UNIT_PARAMETER = true, MAP_DATA = true,
-                 BTL_GENERAL_DATA = true, BATTLE_GROUP_DATA = true, UNIT_PARAMETER_CALC_DATA = true }
+                 BTL_GENERAL_DATA = true, BATTLE_GROUP_DATA = true, UNIT_PARAMETER_CALC_DATA = true,
+                 SKILL_EFFECT_DATA = true }
 local function collectTables()
     local out = { GAME_DIFFICULTY_PARAM = {}, UNIT_PARAMETER = {}, MAP_DATA = {},
-                  BTL_GENERAL_DATA = {}, BATTLE_GROUP_DATA = {}, UNIT_PARAMETER_CALC_DATA = {} }
+                  BTL_GENERAL_DATA = {}, BATTLE_GROUP_DATA = {}, UNIT_PARAMETER_CALC_DATA = {},
+                  SKILL_EFFECT_DATA = {} }
     local tables = FindAllOf("DataTable")
     if not tables then return out end
     for _, dt in ipairs(tables) do
@@ -248,6 +253,56 @@ local function applyAPCapacity(list)
             stats.apBase = want
         end)
     end
+end
+
+-- Limit Burst gain. LB passives and skills are SKILL_EFFECT_DATA rows of effect type 2 (parameter
+-- variation) whose ParamList is { amount %, 4 = LimitBurstPoint, ... }: taking damage, attack, crit,
+-- kill, auto charge, heal... Positive amounts are multiplied (LB costs stay as they are), and so are
+-- the base gains in UNIT_PARAMETER_CALC_DATA (break, all-break, taking damage).
+local EFFECT_PARAM_VARIATION, PARAM_LB = 2, 4
+local origLBEffect, origLBBase = {}, {}
+local lastLBKey = nil
+local function applyLBGain(effectTables, calcTables)
+    local m = cfg.LBGainMultiplier
+    if m < 0 then m = 0 end
+    local key = signature(effectTables) .. "|" .. signature(calcTables) .. "|" .. string.format("%.3f", m)
+    if key == lastLBKey then return end
+    local n = 0
+    for _, t in ipairs(effectTables) do
+        t.dt:ForEachRow(function(rowName, row)
+            if row.EffectType ~= EFFECT_PARAM_VARIATION then return end
+            local k = t.path .. "|" .. rowName
+            local o = origLBEffect[k]
+            if o == nil then
+                o = false
+                local amount, ptype
+                row.ParamList:ForEach(function(i, e)
+                    if i == 1 then amount = e:get() elseif i == 2 then ptype = e:get() end
+                end)
+                if ptype == PARAM_LB and amount and amount > 0 then o = amount end
+                origLBEffect[k] = o
+            end
+            if o then
+                row.ParamList:ForEach(function(i, e) if i == 1 then e:set(math.floor(o * m + 0.5)) end end)
+                n = n + 1
+            end
+        end)
+    end
+    for _, t in ipairs(calcTables) do
+        t.dt:ForEachRow(function(rowName, row)
+            local k = t.path .. "|" .. rowName
+            local o = origLBBase[k]
+            if not o then
+                o = { row.breakLBIncrease, row.allBreakLBIncrease, row.damagedLBIncrease }
+                origLBBase[k] = o
+            end
+            row.breakLBIncrease = math.floor(o[1] * m + 0.5)
+            row.allBreakLBIncrease = math.floor(o[2] * m + 0.5)
+            row.damagedLBIncrease = o[3] * m
+        end)
+    end
+    stats.lbEffects = n
+    lastLBKey = key
 end
 
 -- Dev helpers: active only when the mod folder has a "dev" subfolder.
@@ -502,6 +557,7 @@ local function applyAll()
         applyBattleSpeed(t.BTL_GENERAL_DATA)
         applyBattleGroups(t.BATTLE_GROUP_DATA)
         applyAPCapacity(t.UNIT_PARAMETER_CALC_DATA)
+        applyLBGain(t.SKILL_EFFECT_DATA, t.UNIT_PARAMETER_CALC_DATA)
         applyPlayerThreshold()
     end)
     stats.lastError = ok and "" or tostring(err)
@@ -557,6 +613,10 @@ end
 local function writeStatus()
     writeFile(STATUS_PATH, table.concat({
         "ItemLimit=" .. cfg.ItemLimit,
+        "MapMarkers=" .. (cfg.MapMarkers and "1" or "0"),
+        string.format("LBGain=%.2f", cfg.LBGainMultiplier),
+        "LBEffects=" .. tostring(stats.lbEffects or ""),
+        "PersistentLB=" .. (cfg.PersistentLB and "1" or "0"),
         "APBase=" .. tostring(stats.apBase or ""),
         "ItemLimitResult=" .. itemLimitResult(),
         "Encounters=" .. (cfg.EncountersEnabled and "1" or "0"),
@@ -930,6 +990,13 @@ local okRec, errRec = pcall(function()
                 c.keys[#c.keys + 1] = { k.Category, k.ID }
             end)
             if #c.items == 0 then return end
+            if DEV_REPEAT then
+                for _, it in ipairs(c.items) do
+                    repLog("decided: unit %d action %d cmd %d type %d IsAll=%s targets=[%s] params=[%s] parent=%d/%d keys=%d",
+                        it.unit, it.actionId, c.CommandId, c.CmdType, tostring(it.IsAll), table.concat(it.targets, ","),
+                        table.concat(it.params, ","), it.pCat or -1, it.pId or -1, #c.keys)
+                end
+            end
             local actor = c.items[1].unit
             Rep.lastDecidedActor = actor
             if c.CmdType == 0 or c.CmdType == 1 or c.CmdType == 2 then
@@ -958,7 +1025,7 @@ end
 -- Everything else keeps the recorded target.
 ------------------------------------------------------------------------
 local SkillIdx = nil   -- [skillId] = { kind = "heal"|"buff"|nil, statuses = {[status]=true} }
-local REL_FRIENDLIES, PARAM_HP, TARGET_SINGLE = 1, 1, 1
+local REL_FRIENDLIES, REL_ENEMIES, PARAM_HP, TARGET_SINGLE = 1, 2, 1, 1
 local EFFECT_DAMAGE_RECOVERY = 1
 local VAR_INCREASE, VAR_RATIO_INCREASE = 0, 2
 
@@ -1004,7 +1071,7 @@ local function buildSkillIndex()
     end
     local idx, n = {}, 0
     for id, s in pairs(skills) do
-        local entry = { kind = nil, statuses = {}, cost = s.cost or 0 }
+        local entry = { kind = nil, statuses = {}, cost = s.cost or 0, rel = s.rel }
         if s.rel == REL_FRIENDLIES and s.targetType == TARGET_SINGLE then
             if s.status and s.status > 0 then entry.statuses[s.status] = true end
             for _, eid in ipairs(s.effectIds) do
@@ -1149,7 +1216,19 @@ local function replay(source)
     v.CommandId = c.CommandId
     for i, it in ipairs(c.items) do
         local targets = {}
-        if not it.IsAll and #it.targets == 1 then
+        if it.IsAll then
+            -- "All" (toggled with the all-target button): target everyone the skill can reach in
+            -- this battle. The recorded unit ids belong to the earlier battle, so reusing them
+            -- could leave a single target.
+            local info = skillInfo(it.actionId)
+            local rel = (info and (info.rel == REL_FRIENDLIES or info.rel == REL_ENEMIES)) and info.rel or REL_ENEMIES
+            local okA, all = pcall(function()
+                return outList(function(t) bfl:GetSkillTargetUnitUniqueIdList(t, actor, it.actionId, rel, true) end)
+            end)
+            if okA and #all > 0 then targets = all
+            elseif not okA then repLog("%s: all-target list error %s", source, tostring(all)) end
+        end
+        if #targets == 0 and not it.IsAll and #it.targets == 1 then
             local okS, smart = pcall(smartTarget, source, actor, it.actionId, it.targets[1])
             if okS and smart then targets = { smart }
             elseif not okS then repLog("%s: smart target error %s", source, tostring(smart)) end
@@ -1385,6 +1464,84 @@ gameLoop(50, function()
         end
     end
 end, 250)
+
+------------------------------------------------------------------------
+-- Persistent Limit Burst gauge: while a battle runs, each party member's LB is recorded once a
+-- second (by character id); when the next battle starts it is written back. Kept in lb_state.txt
+-- so it also survives a game restart (it is not tied to a save slot).
+------------------------------------------------------------------------
+local LB_STATE = DIR .. "/lb_state.txt"
+local LB = { saved = {}, inBattle = false, restored = false, dirty = false }
+do
+    local t = readFile(LB_STATE)
+    if t then
+        for id, v in t:gmatch("(%d+)=(%d+)") do LB.saved[tonumber(id)] = tonumber(v) end
+    end
+end
+local function saveLBState()
+    local lines = {}
+    for id, v in pairs(LB.saved) do lines[#lines + 1] = id .. "=" .. v end
+    table.sort(lines)
+    writeFile(LB_STATE, table.concat(lines, "\n") .. "\n")
+    LB.dirty = false
+end
+local function partyLB(fn)
+    local bfl = battleLib()
+    for uid = 0, 3 do
+        pcall(function()
+            local p = bfl:GetBattleUnitParameter(uid, true)
+            if not (p and p:IsValid()) then return end
+            fn(bfl, uid, p:GetUnitId())
+        end)
+    end
+end
+gameLoop(1000, function()
+    local u = FindFirstOf("CPP_BtlUnit")
+    local battle = u ~= nil and u:IsValid()
+    if not battle then
+        if LB.inBattle then
+            LB.inBattle, LB.restored = false, false
+            if LB.dirty then saveLBState() end
+        end
+        return
+    end
+    LB.inBattle = true
+    if not cfg.PersistentLB then return end
+    if not LB.restored then
+        local n, done = 0, false
+        partyLB(function(bfl, uid, unitId)
+            done = true
+            local want = LB.saved[unitId]
+            if want and want > 0 then
+                local cur = bfl:GetUnitLimitBurstPoint(uid) or 0
+                if want > cur then bfl:SetBattleUnitLimitBurstPoint(unitId, want); n = n + 1 end
+            end
+        end)
+        if done then
+            LB.restored = true
+            if n > 0 then log("persistent LB: restored %d character(s)", n) end
+        end
+        return
+    end
+    partyLB(function(bfl, uid, unitId)
+        local v = bfl:GetUnitLimitBurstPoint(uid)
+        if type(v) == "number" and v >= 0 and LB.saved[unitId] ~= v then LB.saved[unitId] = v; LB.dirty = true end
+    end)
+end)
+
+------------------------------------------------------------------------
+-- Map markers for chests and shining spots (scripts/markers.lua, based on
+-- "Item and Chest Markers" by ZArkadia). Needs the zzz_TreasureMinimap_P pak.
+------------------------------------------------------------------------
+do
+    local okM, markers = pcall(require, "markers")
+    if okM and type(markers) == "table" then
+        local okS, err = pcall(markers.start, { enabled = function() return cfg.MapMarkers end, log = log })
+        if not okS then log("markers: start failed: %s", tostring(err)) end
+    else
+        log("markers: module not loaded: %s", tostring(markers))
+    end
+end
 
 log("loaded from %s (%s = encounters, %s = cycle multiplier, %s = repeat command, %s = auto repeat; pad: repeat %s, auto %s)", DIR,
     cfg.ToggleEncounterKey, cfg.CycleMultiplierKey, cfg.RepeatCommandKey, cfg.AutoRepeatKey,
