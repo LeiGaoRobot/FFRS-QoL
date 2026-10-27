@@ -963,6 +963,7 @@ end)
 ------------------------------------------------------------------------
 local Rep = {
     records = {},          -- ["<unit>:<cmdType>"] = plain copy of the decision
+    single = {},           -- same key: last decision with a single action (W fallback)
     menuOpen = false,
     lastDecidedActor = -1, -- actor of the previous decision (diagnostics only)
     menuSerial = 0,
@@ -1011,6 +1012,22 @@ local function countRecords()
     stats.repeatRecords = n
 end
 
+-- Statuses that take over a unit's targeting: confusion, charm, berserk (eUnitStatusCondition).
+local OUT_OF_CONTROL = { [6] = true, [8] = true, [10] = true }
+-- Returns the first out-of-control status the unit has, or nil.
+local function outOfControl(uid)
+    local ok, st = pcall(function()
+        local t = {}
+        battleLib():GetStatusConditionList(t, uid)
+        for _, x in pairs(t) do
+            if type(x) == "userdata" then x = x:get() end
+            if OUT_OF_CONTROL[x] then return x end
+        end
+        return nil
+    end)
+    return ok and st or nil
+end
+
 -- Record every decided command.
 local okRec, errRec = pcall(function()
     RegisterHook("/Script/mucha.CPP_BtlDelEventCmd:OnExecuteDecideCommand", function(ctx, value)
@@ -1041,8 +1058,24 @@ local okRec, errRec = pcall(function()
             end
             local actor = c.items[1].unit
             Rep.lastDecidedActor = actor
+            Rep.decidedSinceMenu, Rep.subMenu = true, false
+            -- A confused/charmed/berserk unit's targets are not the player's choice: keep the
+            -- previous record instead.
+            local st = outOfControl(actor)
+            if st then
+                repLog("unit %d decided while out of control (status %d): not recorded", actor, st)
+                return
+            end
             if c.CmdType == 0 or c.CmdType == 1 or c.CmdType == 2 then
-                Rep.records[actor .. ":" .. c.CmdType] = c
+                local key = actor .. ":" .. c.CmdType
+                -- A fallback sent because MP ran short must not replace the W turn it stood in for.
+                if Rep.fallbackKey == key then
+                    Rep.fallbackKey = nil
+                else
+                    Rep.records[key] = c
+                end
+                -- Keep the last single ability too, as a fallback when a W turn can't be paid for.
+                if #c.items == 1 and not c.items[1].isUseItem then Rep.single[actor .. ":" .. c.CmdType] = c end
                 countRecords()
             end
         end)
@@ -1101,11 +1134,12 @@ local function buildSkillIndex()
                         local b = e:get()
                         if b.effectId > 0 and b.targetRelation == REL_FRIENDLIES then ids[#ids + 1] = b.effectId end
                     end)
+                    local okN, name = pcall(function() return row.Name:ToString() end)
                     skills[row.ID] = {
                         effType = row.skillEffectType, varType = row.parameterVariationType,
                         paramType = row.parameterType, targetType = row.TargetType,
                         rel = row.defaultTargetRelation, status = row.statusCondition, effectIds = ids,
-                        cost = row.Cost,
+                        cost = row.Cost, name = okN and tostring(name) or nil,
                     }
                 end)
             end
@@ -1113,7 +1147,7 @@ local function buildSkillIndex()
     end
     local idx, n = {}, 0
     for id, s in pairs(skills) do
-        local entry = { kind = nil, statuses = {}, cost = s.cost or 0, rel = s.rel }
+        local entry = { kind = nil, statuses = {}, cost = s.cost or 0, rel = s.rel, tgt = s.targetType, name = s.name }
         if s.rel == REL_FRIENDLIES and s.targetType == TARGET_SINGLE then
             if s.status and s.status > 0 then entry.statuses[s.status] = true end
             for _, eid in ipairs(s.effectIds) do
@@ -1158,6 +1192,7 @@ end
 
 -- Skill info from the index (built on first use; unknown ids are cached as empty).
 local function skillInfo(skillId)
+    if skillId == nil then return nil end
     if not SkillIdx or not SkillIdx[skillId] then
         buildSkillIndex()
         if SkillIdx and not SkillIdx[skillId] then SkillIdx[skillId] = { kind = nil, statuses = {}, cost = 0 } end
@@ -1215,77 +1250,166 @@ local function smartTarget(source, actor, skillId, recorded)
     return best
 end
 
--- Re-send the current actor's last command. Returns true when sent.
+local TGT_SELF = 0
+local STATUS_TEXT = { [6] = { "混乱", "confused" }, [8] = { "魅惑", "charmed" }, [10] = { "狂暴", "berserk" } }
+
+local function skillName(id)
+    local info = skillInfo(id)
+    return (info and info.name and info.name ~= "") and info.name or tostring(id)
+end
+
+-- Readable summary of a recorded turn: "W臂腕：極·明鏡 + 極·明鏡" or one skill name.
+local function describe(c)
+    local subs = {}
+    for i = 2, #c.items do subs[#subs + 1] = skillName(c.items[i].actionId) end
+    local first = skillName(c.items[1].actionId)
+    if #subs == 0 then return first end
+    return first .. tr("：", ": ") .. table.concat(subs, " + ")
+end
+
+-- The MP a skill really costs this character (equipment and passives can lower it below the
+-- table value, e.g. W臂腕 40 -> 20), from the game's own CPP_BFL_Skill:GetSkillCost.
+local skillLib = nil
+local function skillCost(bfl, actor, it)
+    local ok, cost = pcall(function()
+        if not (skillLib and skillLib:IsValid()) then skillLib = StaticFindObject("/Script/mucha.Default__CPP_BFL_Skill") end
+        local unitId = bfl:GetBattleUnitParameter(actor, true):GetUnitId()
+        return skillLib:GetSkillCost(it.actionId, unitId, it.IsAll and true or false)
+    end)
+    if ok and type(cost) == "number" and cost >= 0 then return cost end
+    local info = skillInfo(it.actionId)
+    return info and info.cost or 0
+end
+
+-- MP for the whole turn: a W command costs its own MP plus each ability it fires.
+local function totalCost(bfl, actor, c)
+    local sum = 0
+    for _, it in ipairs(c.items) do
+        if not it.isUseItem then sum = sum + skillCost(bfl, actor, it) end
+    end
+    return sum
+end
+
+local function hasItem(c)
+    for _, it in ipairs(c.items) do if it.isUseItem then return true end end
+    return false
+end
+
+-- IsEnableCommand checks a command-menu entry (e.g. 1 = abilities; a basic attack is its own
+-- entry), not an individual skill, so check the menu the command came from.
+local function menuEnabled(bfl, actor, c)
+    local entry = (c.CommandId ~= -1) and c.CommandId or c.items[1].actionId
+    local ok, usable = pcall(function() return bfl:IsEnableCommand(actor, entry) end)
+    return not (ok and usable == false), entry
+end
+
+local function contains(list, x)
+    for _, v in ipairs(list) do if v == x then return true end end
+    return false
+end
+
+-- Targets for one recorded action, re-checked against the battle as it is now:
+--   self skills -> the actor; "All" -> everyone the skill can reach;
+--   support skills -> smart pick (lowest HP / missing buff) or a valid recorded ally;
+--   attacks -> recorded targets that are still valid enemies, else the game's default target.
+-- Only units the skill can actually target (by its own relation) are ever used, so an attack
+-- recorded against a party member (e.g. under confusion) goes to an enemy instead.
+local function pickTargets(source, bfl, actor, it)
+    local info = skillInfo(it.actionId) or {}
+    if info.tgt == TGT_SELF then return { actor } end
+    local rel = (info.rel == REL_FRIENDLIES or info.rel == REL_ENEMIES) and info.rel or REL_ENEMIES
+    local okC, cands = pcall(function()
+        return outList(function(t) bfl:GetSkillTargetUnitUniqueIdList(t, actor, it.actionId, rel, true) end)
+    end)
+    if not okC then
+        repLog("%s: target list error %s", source, tostring(cands))
+        cands = nil
+    end
+    if it.IsAll then return cands or {} end
+    if rel == REL_FRIENDLIES and #it.targets == 1 then
+        local okS, smart = pcall(smartTarget, source, actor, it.actionId, it.targets[1])
+        if okS and smart then return { smart } end
+        if not okS then repLog("%s: smart target error %s", source, tostring(smart)) end
+    end
+    local keep = {}
+    for _, tid in ipairs(it.targets) do
+        if (cands and contains(cands, tid)) or (not cands and unitAlive(tid)) then keep[#keep + 1] = tid end
+    end
+    if #keep > 0 then return keep end
+    local okT, nt = pcall(function() return bfl:GetDefaultSkillTargetUnitUniqueId(actor, it.actionId) end)
+    if okT and type(nt) == "number" and nt >= 0 and (not cands or contains(cands, nt)) then return { nt } end
+    if cands and #cands > 0 then return { cands[1] } end
+    return {}
+end
+
+-- Re-send the current actor's last command.
+-- Returns true, note, summary when sent (note explains a fallback), or false, reason.
 local function replay(source)
     local notNow = tr("现在不能重复（请在选指令时使用）", "Can't repeat now (use it while choosing a command)")
     if not Rep.menuOpen then repLog("%s: command menu not open", source); return false, notNow end
     local actor = currentActor()
     if actor == nil or actor < 0 then repLog("%s: no acting unit", source); return false, notNow end
-    local cmdType = currentPhase()
-    local c = Rep.records[actor .. ":" .. cmdType]
-    if not c then repLog("%s: unit %d has no recorded command (type %d)", source, actor, cmdType); return false, tr("这个角色还没有可重复的指令，请手动选择", "No command to repeat for this character yet; choose one") end
-    local first = c.items[1]
-    if first.isUseItem then repLog("%s: unit %d last used an item, not repeated", source, actor); return false, tr("上次用的是道具，不会重复", "Last command was an item; not repeated") end
+    if Rep.subMenu then
+        repLog("%s: unit %d is choosing a W second command", source, actor)
+        return false, tr("正在选择 W 的第二个指令，请手动选完", "Choosing the second W command; finish it by hand")
+    end
+    local st = outOfControl(actor)
+    if st then
+        repLog("%s: unit %d is out of control (status %d)", source, actor, st)
+        local s = STATUS_TEXT[st] or { "异常", "out of control" }
+        return false, tr("这个角色处于" .. s[1] .. "状态，不自动重复，请手动选择",
+            "This character is " .. s[2] .. "; not repeating, choose a command")
+    end
+    local key = actor .. ":" .. currentPhase()
+    local c = Rep.records[key]
+    if not c then repLog("%s: unit %d has no recorded command (%s)", source, actor, key); return false, tr("这个角色还没有可重复的指令，请手动选择", "No command to repeat for this character yet; choose one") end
+    if hasItem(c) then repLog("%s: unit %d last used an item, not repeated", source, actor); return false, tr("上次用的是道具，不会重复", "Last command was an item; not repeated") end
 
     local bfl = battleLib()
-    -- IsEnableCommand checks a command-menu entry (e.g. 1 = abilities; a basic attack is its own
-    -- entry), not an individual skill, so check the menu the command came from.
-    local menuEntry = (c.CommandId ~= -1) and c.CommandId or first.actionId
-    local okE, usable = pcall(function() return bfl:IsEnableCommand(actor, menuEntry) end)
-    if DEV_REPEAT then repLog("%s: unit %d action %d menu %d IsEnableCommand=%s", source, actor, first.actionId, menuEntry, tostring(usable)) end
-    if okE and usable == false then
-        repLog("%s: unit %d command menu %d not available now", source, actor, menuEntry)
+    local okMenu, entry = menuEnabled(bfl, actor, c)
+    if not okMenu then
+        repLog("%s: unit %d command menu %d not available now", source, actor, entry)
         return false, tr("上次的指令现在不能用，请手动选择", "Last command isn't available now; choose one")
     end
-    -- MP check for skills from a skill menu.
-    if c.CommandId ~= -1 then
-        local info = skillInfo(first.actionId)
-        local cost = info and info.cost or 0
-        local mp = currentMP(bfl, actor)
-        if cost > 0 and mp and mp < cost then
-            repLog("%s: unit %d skill %d needs %d MP, has %d", source, actor, first.actionId, cost, mp)
-            return false, tr("MP 不足，请手动选择", "Not enough MP; choose a command")
+
+    -- MP for the whole turn. A W turn that can't be paid for falls back to the last single ability.
+    local note = nil
+    local mp = currentMP(bfl, actor)
+    local cost = totalCost(bfl, actor, c)
+    if mp and cost > mp then
+        local s = Rep.single[key]
+        if #c.items > 1 and s and totalCost(bfl, actor, s) <= mp and menuEnabled(bfl, actor, s) then
+            note = string.format(tr("MP 不够 %s（需要 %d），改用 %s", "Not enough MP for %s (needs %d); using %s instead"), describe(c), cost, describe(s))
+            repLog("%s: unit %d MP %d < %d, falling back to %s", source, actor, mp, cost, describe(s))
+            c = s
+            Rep.fallbackKey = key
+        else
+            repLog("%s: unit %d needs %d MP, has %d", source, actor, cost, mp)
+            return false, string.format(tr("MP 不足（需要 %d，现有 %d），请手动选择", "Not enough MP (needs %d, has %d); choose a command"), cost, mp)
         end
     end
 
     local cls = StaticFindObject("/Script/mucha.CPP_BtlCmdDecideDelegateVal")
     local disp = FindFirstOf("CPP_MuchaEventDispatcher")
     if not (cls and cls:IsValid() and disp and disp:IsValid()) then repLog("%s: game objects missing", source); return false, tr("重复失败", "Repeat failed") end
+
+    -- Work out every target first, so a turn is sent whole or not at all.
+    local targetsFor = {}
+    for i, it in ipairs(c.items) do
+        local targets = pickTargets(source, bfl, actor, it)
+        if #targets == 0 then
+            repLog("%s: unit %d action %d has no valid target", source, actor, it.actionId)
+            return false, tr("没有可用的目标，请手动选择", "No valid target; choose one")
+        end
+        targetsFor[i] = targets
+    end
+
     local v = StaticConstructObject(cls, disp)
     v.CmdType = c.CmdType
     v.isNotConsume = c.isNotConsume
     v.doCalcOrder = c.doCalcOrder
     v.CommandId = c.CommandId
     for i, it in ipairs(c.items) do
-        local targets = {}
-        if it.IsAll then
-            -- "All" (toggled with the all-target button): target everyone the skill can reach in
-            -- this battle. The recorded unit ids belong to the earlier battle, so reusing them
-            -- could leave a single target.
-            local info = skillInfo(it.actionId)
-            local rel = (info and (info.rel == REL_FRIENDLIES or info.rel == REL_ENEMIES)) and info.rel or REL_ENEMIES
-            local okA, all = pcall(function()
-                return outList(function(t) bfl:GetSkillTargetUnitUniqueIdList(t, actor, it.actionId, rel, true) end)
-            end)
-            if okA and #all > 0 then targets = all
-            elseif not okA then repLog("%s: all-target list error %s", source, tostring(all)) end
-        end
-        if #targets == 0 and not it.IsAll and #it.targets == 1 then
-            local okS, smart = pcall(smartTarget, source, actor, it.actionId, it.targets[1])
-            if okS and smart then targets = { smart }
-            elseif not okS then repLog("%s: smart target error %s", source, tostring(smart)) end
-        end
-        if #targets == 0 then
-            for _, tid in ipairs(it.targets) do
-                if unitAlive(tid) then targets[#targets + 1] = tid end
-            end
-        end
-        if #targets == 0 and not it.IsAll then
-            local okT, nt = pcall(function() return bfl:GetDefaultSkillTargetUnitUniqueId(actor, it.actionId) end)
-            if okT and nt ~= nil and nt >= 0 then targets = { nt } end
-        end
-        if #targets == 0 then repLog("%s: unit %d has no valid target", source, actor); return false, tr("没有可用的目标，请手动选择", "No valid target; choose one") end
-
         v.cmdDecideDataList[i] = { actionId = it.actionId, actionUnitUniqueId = it.unit }
         local d = v.cmdDecideDataList[i]
         d.actionId = it.actionId
@@ -1294,8 +1418,9 @@ local function replay(source)
         d.IsAll = it.IsAll
         d.ParentActionKey.Category = it.pCat
         d.ParentActionKey.ID = it.pId
-        for j, tid in ipairs(targets) do d.targetUnitUniqueIdList[j] = tid end
+        for j, tid in ipairs(targetsFor[i]) do d.targetUnitUniqueIdList[j] = tid end
         for j, p in ipairs(it.params) do d.ParameterList[j] = p end
+        if DEV_REPEAT then repLog("%s: send action %d targets [%s]", source, it.actionId, table.concat(targetsFor[i], ",")) end
     end
     for i, k in ipairs(c.keys) do
         v.actionKeys[i] = { Category = k[1], ID = k[2] }
@@ -1303,8 +1428,15 @@ local function replay(source)
         v.actionKeys[i].ID = k[2]
     end
     disp:ExecuteEvent({ TagName = FName("Delegate.Battle.Cmd.Decide") }, v)
-    repLog("%s: unit %d repeated action %d (type %d)", source, actor, first.actionId, c.CmdType)
-    return true
+    local summary = describe(c)
+    repLog("%s: unit %d repeated %s (type %d)", source, actor, summary, c.CmdType)
+    return true, note, summary
+end
+
+-- Dev only: let dev/eval.lua inspect and drive repeat (tests without menu input).
+if DEV_REPEAT then
+    _G.FFRS_Repeat = { Rep = Rep, replay = replay, outOfControl = outOfControl, pickTargets = pickTargets,
+                       describe = describe, totalCost = totalCost, skillInfo = skillInfo }
 end
 
 -- Track the command menu; in auto mode, replay shortly after it opens.
@@ -1315,15 +1447,24 @@ local okMenu, errMenu = pcall(function()
         if t == "Delegate.Battle.Cmd.List.Begin" then
             Rep.menuOpen = true
             Rep.menuSerial = Rep.menuSerial + 1
-            if not Hud.inBattle then Hud.inBattle = true; updateBadge() end
-            if DEV_REPEAT then repLog("menu open: actor %d phase %d", currentActor(), currentPhase()) end
-            if cfg.AutoRepeat then
+            if not Hud.inBattle then
+                Hud.inBattle = true; updateBadge()
+                Rep.menuActor, Rep.decidedSinceMenu = nil, true
+            end
+            -- The same unit's menu opening again before anything was decided is the second step
+            -- of a multi-command choice (W臂腕 and similar): leave it to the player.
+            local actor = currentActor()
+            Rep.fallbackKey = nil
+            Rep.subMenu = (actor == Rep.menuActor and not Rep.decidedSinceMenu)
+            Rep.menuActor, Rep.decidedSinceMenu = actor, false
+            if DEV_REPEAT then repLog("menu open: actor %d phase %d%s", actor, currentPhase(), Rep.subMenu and " (W second command)" or "") end
+            if cfg.AutoRepeat and not Rep.subMenu then
                 local serial = Rep.menuSerial
                 gameDelay(350, function()
                     if cfg.AutoRepeat and Rep.menuOpen and Rep.menuSerial == serial then
                         local ok, sent, why = pcall(replay, "auto")
                         if not ok then log("auto repeat error: %s", tostring(sent))
-                        elseif not sent and why then toast(tr("自动重复：", "Auto repeat: ") .. why, AMBER, 2200) end
+                        elseif why then toast(tr("自动重复：", "Auto repeat: ") .. why, AMBER, 2600) end
                     end
                 end)
             end
@@ -1335,9 +1476,11 @@ end)
 if not okMenu then log("repeat: could not hook battle events: %s", tostring(errMenu)) end
 
 bind("RepeatCommandKey", function()
-    local ok, sent, why = pcall(replay, "key")
+    local ok, sent, why, summary = pcall(replay, "key")
     if not ok then log("repeat error: %s", tostring(sent)); toast(tr("重复失败", "Repeat failed"), AMBER); return end
-    if sent then toast(tr("重复上次指令", "Repeated last command"), GREEN, 1200) else toast(why or tr("重复失败", "Repeat failed"), AMBER, 2200) end
+    if sent and why then toast(why, AMBER, 2600)
+    elseif sent then toast(tr("重复：", "Repeat: ") .. (summary or ""), GREEN, 1500)
+    else toast(why or tr("重复失败", "Repeat failed"), AMBER, 2200) end
 end)
 
 bind("AutoRepeatKey", function()
