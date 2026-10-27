@@ -2,7 +2,9 @@
 # The game hardcodes 99 as the per-item carry limit. This rewrites those spots in the running
 # game's memory (never the exe on disk). Limit 99 restores the original code.
 # Started by the mod (Scripts/main.lua) at game start and whenever ItemLimit changes.
-param([int]$Limit = 99, [string]$Out = "")
+# With -BpFuncs it instead patches 99 constants in the shop buy dialog's Blueprint bytecode
+# (main.lua passes "<UFunction address hex>@<bytecode offset>,..." once that class is loaded).
+param([int]$Limit = 99, [string]$Out = "", [string]$BpFuncs = "")
 
 $ErrorActionPreference = 'Stop'
 if (-not $Out) { $Out = Join-Path $PSScriptRoot 'itemlimit_status.txt' }
@@ -56,6 +58,37 @@ $patches = @(
 
 $procs = @(Get-Process -Name 'FFRS-Win64-Shipping' -ErrorAction SilentlyContinue)
 if ($procs.Count -eq 0) { Report "no game process"; exit 1 }
+
+# Blueprint mode: the shop buy dialog (WBP_DialogCustomContet_ShopBuy) checks "held < 99" and
+# uses 99 as the stack size for the buyable count. Each spec points at an EX_IntConst (0x1D +
+# int32) inside a UFunction's Script bytecode (TArray at UFunction + 0x60, heap memory).
+if ($BpFuncs) {
+    $bpOut = Join-Path $PSScriptRoot 'itemlimit_bp_status.txt'
+    $p = $procs[0]
+    $h = [FfrsMem]::OpenProcess(0x0438, $false, $p.Id)
+    $ok = 0; $bad = @(); $specs = @($BpFuncs.Split(',') | Where-Object { $_ })
+    try {
+        foreach ($spec in $specs) {
+            $fn, $off = $spec.Split('@')
+            $fnAddr = [Convert]::ToInt64($fn, 16); $off = [int]$off
+            $hdr = New-Object byte[] 16; $n = [IntPtr]::Zero
+            if (-not [FfrsMem]::ReadProcessMemory($h, [IntPtr]($fnAddr + 0x60), $hdr, [IntPtr]16, [ref]$n)) { $bad += "${spec}: read header"; continue }
+            $code = [BitConverter]::ToInt64($hdr, 0); $len = [BitConverter]::ToInt32($hdr, 8)
+            if ($code -le 0x10000 -or $off + 5 -gt $len) { $bad += "${spec}: no bytecode"; continue }
+            $cur = New-Object byte[] 5
+            if (-not [FfrsMem]::ReadProcessMemory($h, [IntPtr]($code + $off), $cur, [IntPtr]5, [ref]$n)) { $bad += "${spec}: read code"; continue }
+            $val = [BitConverter]::ToInt32($cur, 1)
+            # Only touch an int constant that holds the original 99 or an earlier limit of ours.
+            if ($cur[0] -ne 0x1D -or $val -lt 99 -or $val -gt 9999) { $bad += "${spec}: unexpected bytes"; continue }
+            if ($val -eq $Limit) { $ok++; continue }
+            if ([FfrsMem]::WriteProcessMemory($h, [IntPtr]($code + $off + 1), $imm, [IntPtr]4, [ref]$n)) { $ok++ } else { $bad += "${spec}: write" }
+        }
+    } finally { [void][FfrsMem]::CloseHandle($h) }
+    $s = "shop dialog limit $Limit, $ok/$($specs.Count) ok"
+    if ($bad.Count) { $s += " | " + ($bad -join '; ') }
+    try { [IO.File]::WriteAllText($bpOut, "ShopDialogResult=$s`r`n") } catch {}
+    exit 0
+}
 
 $summary = @()
 foreach ($p in $procs) {

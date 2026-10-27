@@ -602,6 +602,43 @@ local function applyItemLimit()
     log("item limit %d: patcher %s", cfg.ItemLimit, ok and "started" or ("failed: " .. tostring(res)))
 end
 
+-- The shop's buy dialog Blueprint has its own 99s: "held < 99" (CheckTrade) and a stack size of
+-- 99 for the buyable count (GetTradeMaxCount). Without this, buying an item you hold more than 99
+-- of opens an empty dialog. The class only exists once loaded, and its bytecode is reset whenever
+-- it reloads, so this checks every second and has ItemLimit.ps1 rewrite the two int constants
+-- (bytecode offsets found in game version 1.0.1.0; the patcher verifies the bytes first).
+local SHOPBUY_BP = "/Game/UI/Shop/widget/Dialog/custom/WBP_DialogCustomContet_ShopBuy.WBP_DialogCustomContet_ShopBuy_C"
+local SHOPBUY_CONSTS = { { fn = "CheckTrade", off = 88 }, { fn = "GetTradeMaxCount", off = 23 } }
+local shopBuyKey = nil
+local shopBuyPreloaded = false
+local function applyShopDialogLimit()
+    if not itemLimitInstalled() then return end
+    if cfg.ItemLimit > 99 and not shopBuyPreloaded then
+        shopBuyPreloaded = true
+        local ok, err = pcall(LoadAsset, SHOPBUY_BP)
+        if not ok then log("shop dialog preload failed: %s", tostring(err)) end
+    end
+    local specs = {}
+    for _, c in ipairs(SHOPBUY_CONSTS) do
+        local f = StaticFindObject(SHOPBUY_BP .. ":" .. c.fn)
+        if not (f and f:IsValid()) then return end
+        specs[#specs + 1] = string.format("%x@%d", f:GetAddress(), c.off)
+    end
+    local spec = table.concat(specs, ",")
+    local key = spec .. "|" .. cfg.ItemLimit
+    if key == shopBuyKey then return end
+    -- A freshly loaded class already has the original 99s.
+    if shopBuyKey == nil and cfg.ItemLimit == 99 then shopBuyKey = key; return end
+    shopBuyKey = key
+    os.remove(DIR .. "/itemlimit_bp_status.txt")
+    local ps1 = ITEMLIMIT_PS1:gsub("/", "\\")
+    local cmd = string.format(
+        'start "" conhost.exe --headless powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%s" -Limit %d -BpFuncs %s',
+        ps1, cfg.ItemLimit, spec)
+    local ok, res = pcall(os.execute, cmd)
+    log("shop dialog limit %d: patcher %s", cfg.ItemLimit, ok and "started" or ("failed: " .. tostring(res)))
+end
+
 local function itemLimitResult()
     if itemLimitApplied == 99 and not itemLimitInstalled() then return "not installed" end
     local t = readFile(ITEMLIMIT_STATUS)
@@ -619,6 +656,7 @@ local function writeStatus()
         "PersistentLB=" .. (cfg.PersistentLB and "1" or "0"),
         "APBase=" .. tostring(stats.apBase or ""),
         "ItemLimitResult=" .. itemLimitResult(),
+        "ShopDialogResult=" .. ((readFile(DIR .. "/itemlimit_bp_status.txt") or ""):match("ShopDialogResult=([^\r\n]*)") or ""),
         "Encounters=" .. (cfg.EncountersEnabled and "1" or "0"),
         string.format("EncounterRate=%.2f", cfg.EncounterRate),
         string.format("Exp=%.2f", cfg.ExpMultiplier),
@@ -658,6 +696,10 @@ gameLoop(1000, function()
     local changed = loadConfig()
     if changed or tick % 3 == 0 then applyAll() end
     if changed then applyItemLimit() end
+    if tick >= 3 then
+        local okS, errS = pcall(applyShopDialogLimit)
+        if not okS then log("shop dialog limit error: %s", tostring(errS)) end
+    end
     if changed then report("config reloaded") end
     if tick % 2 == 0 or changed then writeStatus() end
     local okE, errE = pcall(devEval)
