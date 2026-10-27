@@ -153,7 +153,7 @@ $form.AutoScaleDimensions = New-Object System.Drawing.SizeF(96, 96)
 $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
 $form.Text = $WinTitle
 $form.Font = $font
-$form.ClientSize = New-Object System.Drawing.Size(1000, 778)
+$form.ClientSize = New-Object System.Drawing.Size(1000, 804)
 $form.FormBorderStyle = 'FixedSingle'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
@@ -269,7 +269,7 @@ $tips.SetToolTip($chkLBKeep, (T "战斗结束时的 LB 槽带到下一场战斗�
 # Repeat last command (right column, below the multipliers)
 $grpRep = New-Object System.Windows.Forms.GroupBox
 $grpRep.Text = T '重复上次指令' 'Repeat last command'; $grpRep.Location = New-Object System.Drawing.Point(12, 384)
-$grpRep.Size = New-Object System.Drawing.Size(520, 146)
+$grpRep.Size = New-Object System.Drawing.Size(520, 172)
 $form.Controls.Add($grpRep)
 $chkRepeat = New-Object System.Windows.Forms.CheckBox
 $chkRepeat.Text = T '自动重复（简易自动战斗）' 'Auto repeat (simple auto battle)'
@@ -289,16 +289,14 @@ $grpRep.Controls.Add($smartHint)
 # Items (right column, bottom)
 $grpItem = New-Object System.Windows.Forms.GroupBox
 $grpItem.Text = T '物品与能力' 'Items and abilities'; $grpItem.Location = New-Object System.Drawing.Point(544, 398)
-$grpItem.Size = New-Object System.Drawing.Size(444, 132)
+$grpItem.Size = New-Object System.Drawing.Size(444, 158)
 $form.Controls.Add($grpItem)
 $grpItem.Controls.Add((New-Label (T '持有上限' 'Carry limit') 14 26 96 26))
 $nuItem = New-Object System.Windows.Forms.NumericUpDown
 $nuItem.Minimum = 99; $nuItem.Maximum = 9999; $nuItem.Increment = 100
 $nuItem.Location = New-Object System.Drawing.Point(112, 28); $nuItem.Size = New-Object System.Drawing.Size(84, 26)
 $grpItem.Controls.Add($nuItem)
-$itemHint = New-Label (T '每种物品最多持有数量，原版 99；设回 99 即恢复' 'Max per item; the game uses 99. Set 99 to restore') 14 60 420 26
-$itemHint.ForeColor = $grey
-$grpItem.Controls.Add($itemHint)
+$tips.SetToolTip($nuItem, (T '每种物品最多持有数量，原版 99；设回 99 即恢复' 'Max per item; the game uses 99. Set 99 to restore'))
 $itemState = New-Label '' 202 26 232 26
 $itemState.ForeColor = $grey
 $grpItem.Controls.Add($itemState)
@@ -306,16 +304,43 @@ $grpItem.Controls.Add($itemState)
 $HasItemLimit = Test-Path -LiteralPath (Join-Path $ModDir 'ItemLimit.ps1')
 if (-not $HasItemLimit) {
     $nuItem.Enabled = $false
-    $itemHint.Text = T '需要另外下载可选文件"物品上限"（ItemLimit.ps1）' 'Needs the optional "Item limit" file (ItemLimit.ps1)'
+    $tips.SetToolTip($nuItem, (T '需要另外下载可选文件"物品上限"（ItemLimit.ps1）' 'Needs the optional "Item limit" file (ItemLimit.ps1)'))
 }
-$grpItem.Controls.Add((New-Label (T '能力 AP +' 'AP limit +') 14 94 96 26))
+$grpItem.Controls.Add((New-Label (T '能力 AP +' 'AP limit +') 14 60 96 26))
 $nuAP = New-Object System.Windows.Forms.NumericUpDown
 $nuAP.Minimum = 0; $nuAP.Maximum = 9999; $nuAP.Increment = 50
-$nuAP.Location = New-Object System.Drawing.Point(112, 96); $nuAP.Size = New-Object System.Drawing.Size(84, 26)
+$nuAP.Location = New-Object System.Drawing.Point(112, 62); $nuAP.Size = New-Object System.Drawing.Size(84, 26)
 $grpItem.Controls.Add($nuAP)
-$apHint = New-Label (T '所有角色都加，读档后生效' 'All characters; reload a save') 202 94 232 26
+$apHint = New-Label (T '所有角色都加，读档后生效' 'All characters; reload a save') 202 60 232 26
 $apHint.ForeColor = $grey
 $grpItem.Controls.Add($apHint)
+$grpItem.Controls.Add((New-Label (T '添加物品' 'Add item') 14 94 96 26))
+Add-Type -TypeDefinition @'
+public class FfrsItem {
+    public int Id; public int Type; public int Count; public string Name; public string Display;
+    public override string ToString() { return Display; }
+}
+'@
+$cbAdd = New-Object System.Windows.Forms.ComboBox
+$cbAdd.DropDownStyle = 'DropDown'
+$cbAdd.MaxDropDownItems = 16
+$cbAdd.Location = New-Object System.Drawing.Point(112, 96); $cbAdd.Size = New-Object System.Drawing.Size(176, 26)
+$cbAdd.DropDownWidth = 300
+$grpItem.Controls.Add($cbAdd)
+$nuAdd = New-Object System.Windows.Forms.NumericUpDown
+$nuAdd.Minimum = 1; $nuAdd.Maximum = 9999; $nuAdd.Value = 1
+$nuAdd.Location = New-Object System.Drawing.Point(294, 96); $nuAdd.Size = New-Object System.Drawing.Size(62, 26)
+$grpItem.Controls.Add($nuAdd)
+$btnAdd = New-Object System.Windows.Forms.Button
+$btnAdd.Text = T '添加' 'Add'
+$btnAdd.Location = New-Object System.Drawing.Point(362, 94); $btnAdd.Size = New-Object System.Drawing.Size(72, 29)
+$grpItem.Controls.Add($btnAdd)
+$AddHintText = T '输入名称搜索；需在游戏里读取存档，存档后保留' 'Type to search; needs a save loaded in the game'
+$addStatus = New-Label $AddHintText 14 126 420 24
+$addStatus.ForeColor = $grey
+$grpItem.Controls.Add($addStatus)
+$tips.SetToolTip($cbAdd, (T "输入名称的一部分来搜索（消耗品、装备、素材等，关键道具不显示）。`n括号里是现在的持有数量。" "Type part of a name to search (consumables, gear, materials; key items are hidden).`nThe number is how many you have now."))
+$tips.SetToolTip($btnAdd, (T "直接加进背包，不超过持有上限。存档后才会保留。" "Adds straight to the inventory, up to the carry limit. Kept once you save."))
 
 # Multipliers (right column)
 $grpMul = New-Object System.Windows.Forms.GroupBox
@@ -358,7 +383,7 @@ $grpMul.Controls.Add($chkRare)
 
 # Hotkeys: one row per action, keyboard key + gamepad binding
 $grpKey = New-Object System.Windows.Forms.GroupBox
-$grpKey.Text = T '快捷键' 'Hotkeys'; $grpKey.Location = New-Object System.Drawing.Point(12, 538)
+$grpKey.Text = T '快捷键' 'Hotkeys'; $grpKey.Location = New-Object System.Drawing.Point(12, 564)
 $grpKey.Size = New-Object System.Drawing.Size(976, 182)
 $form.Controls.Add($grpKey)
 
@@ -418,19 +443,19 @@ $grpKey.Controls.Add($padHint2)
 
 $chkAuto = New-Object System.Windows.Forms.CheckBox
 $chkAuto.Text = T '启动游戏时自动打开此窗口' 'Open with the game'
-$chkAuto.Location = New-Object System.Drawing.Point(16, 738); $chkAuto.Size = New-Object System.Drawing.Size(330, 26)
+$chkAuto.Location = New-Object System.Drawing.Point(16, 764); $chkAuto.Size = New-Object System.Drawing.Size(330, 26)
 $form.Controls.Add($chkAuto)
 
 # Buttons
 $btnReset = New-Object System.Windows.Forms.Button
-$btnReset.Text = T '恢复默认' 'Defaults'; $btnReset.Location = New-Object System.Drawing.Point(700, 734)
+$btnReset.Text = T '恢复默认' 'Defaults'; $btnReset.Location = New-Object System.Drawing.Point(700, 760)
 $btnReset.Size = New-Object System.Drawing.Size(104, 32)
 $form.Controls.Add($btnReset)
 $btnFolder = New-Object System.Windows.Forms.Button
-$btnFolder.Text = T '打开 mod 文件夹' 'Open mod folder'; $btnFolder.Location = New-Object System.Drawing.Point(812, 734)
+$btnFolder.Text = T '打开 mod 文件夹' 'Open mod folder'; $btnFolder.Location = New-Object System.Drawing.Point(812, 760)
 $btnFolder.Size = New-Object System.Drawing.Size(176, 32)
 $form.Controls.Add($btnFolder)
-$saveLabel = New-Label '' 350 738 300 26
+$saveLabel = New-Label '' 350 764 300 26
 $saveLabel.TextAlign = 'MiddleLeft'; $saveLabel.ForeColor = $grey
 $form.Controls.Add($saveLabel)
 
@@ -714,6 +739,147 @@ $padTimer.Add_Tick({
     }
 })
 
+# ---------------------------------------------------------------- Add item
+# The game writes items.txt (id, type, count, name in the game's language); requests go to
+# item_request.txt and the answer comes back in item_result.txt.
+$ItemReq = Join-Path $ModDir 'item_request.txt'
+$ItemRes = Join-Path $ModDir 'item_result.txt'
+$ItemListPath = Join-Path $ModDir 'items.txt'
+$script:items = @()
+$script:itemSave = $false
+$script:itemListTime = [datetime]::MinValue
+$script:itemPending = $null
+$script:itemRefreshAt = [datetime]::MinValue
+$TypeTag = @{ '3' = (T '（装备）' ' (gear)'); '4' = (T '（其他）' ' (other)') }
+$okGreen = [System.Drawing.Color]::FromArgb(40, 160, 70)
+$warnAmber = [System.Drawing.Color]::FromArgb(190, 110, 0)
+
+function Set-AddStatus([string]$text, [string]$kind) {
+    $addStatus.Text = $text
+    $addStatus.ForeColor = switch ($kind) { 'ok' { $okGreen } 'warn' { $warnAmber } 'error' { [System.Drawing.Color]::Firebrick } default { $grey } }
+}
+
+function Filter-Items([string]$q) {
+    $q = $q.Trim()
+    $m = if ($q) { @($script:items | Where-Object { $_.Name.IndexOf($q, [StringComparison]::OrdinalIgnoreCase) -ge 0 }) } else { @($script:items) }
+    $cbAdd.BeginUpdate()
+    $cbAdd.Items.Clear()
+    if ($m.Count) { $cbAdd.Items.AddRange([object[]]$m) }
+    $cbAdd.EndUpdate()
+    return $m.Count
+}
+
+function Load-ItemList([bool]$force = $false) {
+    if (-not (Test-Path -LiteralPath $ItemListPath)) { return }
+    $t = (Get-Item -LiteralPath $ItemListPath).LastWriteTimeUtc
+    if (-not $force -and $t -eq $script:itemListTime) { return }
+    $script:itemListTime = $t
+    $list = New-Object System.Collections.Generic.List[FfrsItem]
+    $script:itemSave = $false
+    foreach ($line in [System.IO.File]::ReadAllLines($ItemListPath, [System.Text.Encoding]::UTF8)) {
+        if ($line -eq 'save=1') { $script:itemSave = $true; continue }
+        $p = $line.Split("`t")
+        if ($p.Count -lt 4 -or $p[1] -eq '2') { continue }  # 2 = key items
+        $it = New-Object FfrsItem
+        $it.Id = [int]$p[0]; $it.Type = [int]$p[1]; $it.Count = [int]$p[2]; $it.Name = $p[3]
+        $it.Display = $it.Name + [string]$TypeTag[$p[1]]
+        if ($script:itemSave) { $it.Display += "  ($($it.Count))" }
+        $list.Add($it)
+    }
+    $script:items = $list.ToArray()
+    # Keep what the user typed or picked.
+    $selId = if ($cbAdd.SelectedItem) { $cbAdd.SelectedItem.Id } else { 0 }
+    $text = $cbAdd.Text
+    if ($selId) {
+        [void](Filter-Items '')
+        $match = $null; foreach ($i in $cbAdd.Items) { if ($i.Id -eq $selId) { $match = $i; break } }
+        if ($match) { $cbAdd.SelectedItem = $match } else { $cbAdd.Text = $text }
+    } else {
+        [void](Filter-Items $text)
+        $cbAdd.Text = $text
+    }
+}
+
+function Send-ItemRequest([int]$id, [int]$num) {
+    if (-not (Get-Process -Name 'FFRS-Win64-Shipping' -ErrorAction SilentlyContinue)) { return $false }
+    $serial = [string](Get-Date).Ticks
+    Remove-Item -LiteralPath $ItemRes -ErrorAction SilentlyContinue
+    try { [System.IO.File]::WriteAllText($ItemReq, "id=$serial`nitem=$id`nnum=$num`n") } catch { return $false }
+    $script:itemPending = @{ Serial = $serial; Item = $id; Start = Get-Date }
+    $script:itemRefreshAt = Get-Date
+    $itemTimer.Start()
+    return $true
+}
+
+function Get-AddTarget {
+    $sel = $cbAdd.SelectedItem
+    if ($sel -and $sel.Display -eq $cbAdd.Text) { return $sel }
+    $q = $cbAdd.Text.Trim()
+    if (-not $q) { return $null }
+    foreach ($i in $script:items) { if ($i.Name -eq $q -or $i.Display -eq $q) { return $i } }
+    $m = @($script:items | Where-Object { $_.Name.IndexOf($q, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+    if ($m.Count -eq 1) { return $m[0] }
+    return $null
+}
+
+$itemTimer = New-Object System.Windows.Forms.Timer
+$itemTimer.Interval = 200
+$itemTimer.Add_Tick({
+    $pend = $script:itemPending
+    if (-not $pend) { $itemTimer.Stop(); return }
+    $r = $null
+    if (Test-Path -LiteralPath $ItemRes) { try { $r = Read-KeyValues $ItemRes } catch {} }
+    if (-not $r -or $r.id -ne $pend.Serial) {
+        if (((Get-Date) - $pend.Start).TotalSeconds -gt 5) {
+            $script:itemPending = $null; $itemTimer.Stop(); $btnAdd.Enabled = $true
+            if ($pend.Item) { Set-AddStatus (T '游戏没有响应（是否在加载中？）请稍后再试' 'The game did not answer (loading?). Try again shortly') 'error' }
+        }
+        return
+    }
+    $script:itemPending = $null; $itemTimer.Stop(); $btnAdd.Enabled = $true
+    Load-ItemList $true
+    $name = ($script:items | Where-Object { $_.Id -eq [int]$r.item } | Select-Object -First 1).Name
+    switch ($r.result) {
+        'ok'      { Set-AddStatus ((T '已添加 ' 'Added ') + "$name ×$($r.added)" + (T "，现有 $($r.count)。存档后保留" ", now $($r.count). Save to keep it")) 'ok' }
+        'full'    { Set-AddStatus ("$name" + (T " 已达持有上限 $($r.max)" " is already at the limit ($($r.max))")) 'warn' }
+        'nosave'  { if ($pend.Item) { Set-AddStatus (T '请先在游戏里读取存档' 'Load a save in the game first') 'warn' } }
+        'unknown' { Set-AddStatus (T '找不到这个物品' 'Item not found') 'error' }
+        'list'    { }
+        default   { Set-AddStatus (T '添加失败，详见 ue4ss\UE4SS.log' 'Failed; see ue4ss\UE4SS.log') 'error' }
+    }
+})
+
+$cbAdd.Add_TextUpdate({
+    $q = $cbAdd.Text; $pos = $cbAdd.SelectionStart
+    $n = Filter-Items $q
+    $cbAdd.DroppedDown = ($n -gt 0 -and $q.Trim() -ne '')
+    $cbAdd.Text = $q; $cbAdd.SelectionStart = $pos; $cbAdd.SelectionLength = 0
+    [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::Default
+})
+$cbAdd.Add_DropDown({
+    if (-not $script:itemPending -and ((Get-Date) - $script:itemRefreshAt).TotalSeconds -gt 5) { [void](Send-ItemRequest 0 0) }
+    if ($script:items.Count -eq 0) { Set-AddStatus (T '还没有物品清单：请启动游戏并读取存档' 'No item list yet: start the game and load a save') 'warn' }
+})
+$cbAdd.Add_KeyDown({
+    param($s, $e)
+    if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter) { $e.SuppressKeyPress = $true; $cbAdd.DroppedDown = $false; $btnAdd.PerformClick() }
+})
+$btnAdd.Add_Click({ Invoke-AddClick })
+function Invoke-AddClick {
+    $it = Get-AddTarget
+    if (-not $it) {
+        if ($script:items.Count -eq 0) { Set-AddStatus (T '还没有物品清单：请启动游戏并读取存档' 'No item list yet: start the game and load a save') 'warn' }
+        else { Set-AddStatus (T '请先从列表里选一个物品' 'Pick an item from the list first') 'warn' }
+        return
+    }
+    $cbAdd.SelectedItem = $null
+    foreach ($i in $cbAdd.Items) { if ($i.Id -eq $it.Id) { $cbAdd.SelectedItem = $i; break } }
+    if (-not $cbAdd.SelectedItem) { [void](Filter-Items ''); foreach ($i in $cbAdd.Items) { if ($i.Id -eq $it.Id) { $cbAdd.SelectedItem = $i; break } } }
+    if (-not (Send-ItemRequest $it.Id ([int]$nuAdd.Value))) { Set-AddStatus (T '游戏没有运行' 'The game is not running') 'warn'; return }
+    $btnAdd.Enabled = $false
+    Set-AddStatus (T '正在添加…' 'Adding…') 'info'
+}
+
 # Poll: pick up hotkey changes written by the game, and show live status.
 $script:lastSeenConfig = [datetime]::MinValue
 $pollTimer = New-Object System.Windows.Forms.Timer
@@ -817,6 +983,8 @@ $form.Add_Shown({
     if ($Reopened -or -not $FromGame) { $form.Activate() }  # don't pull focus away from the game
     foreach ($tb in $sliders.Values) { $tb.Invalidate(); $tb.Update() }
     Update-State
+    Load-ItemList
+    [void](Send-ItemRequest 0 0)
 })
 $form.Add_FormClosing({
     if ($script:capture) { Stop-Capture }

@@ -1530,6 +1530,133 @@ gameLoop(1000, function()
 end)
 
 ------------------------------------------------------------------------
+-- Add items (from the settings window). The window writes item_request.txt
+-- ("id=<serial>", "item=<item id>", "num=<count>"; item=0 only refreshes the list). The mod
+-- answers with items.txt (every item in the game's language with the current count) and
+-- item_result.txt. Items go straight into the save's inventory (CPP_BFL_SaveDataInventory
+-- AddInventory), capped at the item's carry limit; they are kept once the game is saved.
+------------------------------------------------------------------------
+local ITEM_REQ = DIR .. "/item_request.txt"
+local ITEM_RES = DIR .. "/item_result.txt"
+local ITEM_LIST = DIR .. "/items.txt"
+local lastItemReq = nil
+os.remove(ITEM_REQ)
+
+local function itemLibs()
+    local inv = StaticFindObject("/Script/mucha.Default__CPP_BFL_SaveDataInventory")
+    local item = StaticFindObject("/Script/mucha.Default__CPP_BFL_Item")
+    if inv and inv:IsValid() and item and item:IsValid() then return inv, item end
+    return nil
+end
+
+-- Items that can be added: consumables/materials (1) and equipment (3). Key items (2) and
+-- artifacts (4, e.g. the chocobo saddle) unlock story features, so they are left out.
+-- { id, type, sort, name } in the game's language, sorted by type then the game's sort order.
+local ADDABLE_TYPES = { 1, 3 }
+local itemCache = nil
+local function allItems(item)
+    if itemCache then return itemCache end
+    local list = {}
+    for _, t in ipairs(ADDABLE_TYPES) do
+        local arr = item:GetAllItemIdListByType(t) or {}
+        for i = 1, #arr do
+            local id = arr[i]
+            if type(id) ~= "number" then id = id:get() end
+            local okN, name = pcall(function() return item:GetItemName(id):ToString() end)
+            name = okN and tostring(name):gsub("[\t\r\n]", " ") or ""
+            if id > 0 and name ~= "" then
+                local okS, sort = pcall(function() return item:GetItemDataById(id).SortId end)
+                list[#list + 1] = { id = id, type = t, sort = (okS and type(sort) == "number") and sort or id, name = name }
+            end
+        end
+    end
+    table.sort(list, function(a, b)
+        if a.type ~= b.type then return a.type < b.type end
+        if a.sort ~= b.sort then return a.sort < b.sort end
+        return a.id < b.id
+    end)
+    -- The item tables load with the game's data; keep the list once it has something.
+    if #list > 0 then itemCache = list end
+    return list
+end
+
+-- A save is loaded when the player has a character on a map. (The title screen already has
+-- a new game's inventory, so the inventory alone can't tell.)
+local function saveLoaded()
+    local pc = playerController()
+    if not pc then return false end
+    local ok, valid = pcall(function() return pc.Pawn ~= nil and pc.Pawn:IsValid() end)
+    return ok and valid == true
+end
+
+local function writeItemList(items, inv, item, loaded)
+    local lines = { "save=" .. (loaded and "1" or "0") }
+    for _, it in ipairs(items) do
+        local n = 0
+        if loaded then
+            local ok, v = pcall(function() return item:GetInventoryItemNum(it.id) end)
+            if ok and type(v) == "number" then n = v end
+        end
+        lines[#lines + 1] = string.format("%d\t%d\t%d\t%s", it.id, it.type, n, it.name)
+    end
+    writeFile(ITEM_LIST, table.concat(lines, "\n") .. "\n")
+end
+
+local function checkItemRequest()
+    local t = readFile(ITEM_REQ)
+    local serial = t and t:match("id=(%d+)")
+    if not serial or serial == lastItemReq then return end
+    lastItemReq = serial
+    os.remove(ITEM_REQ)
+    local want = tonumber(t:match("item=(%d+)")) or 0
+    local num = tonumber(t:match("num=(%d+)")) or 0
+    local inv, item = itemLibs()
+    local function reply(result, extra)
+        writeFile(ITEM_RES, "id=" .. serial .. "\nresult=" .. result .. "\n" .. (extra or ""))
+    end
+    if not inv then reply("nogame"); return end
+    local items = allItems(item)
+    local loaded = saveLoaded()
+    if want > 0 then
+        local entry
+        for _, it in ipairs(items) do if it.id == want then entry = it; break end end
+        if not entry then
+            reply("unknown")
+        elseif not loaded then
+            reply("nosave")
+        else
+            local have = item:GetInventoryItemNum(want) or 0
+            local okM, max = pcall(function() return item:GetMaxItemNumById(want) end)
+            max = (okM and type(max) == "number" and max > 0) and max or 99
+            if cfg.ItemLimit and cfg.ItemLimit > max and itemLimitApplied == cfg.ItemLimit then max = cfg.ItemLimit end
+            local add = math.min(num, max - have)
+            if add <= 0 then
+                reply("full", string.format("item=%d\ncount=%d\nmax=%d\n", want, have, max))
+                toast(string.format(tr("%s 已达持有上限（%d）", "%s is already at the carry limit (%d)"), entry.name, max), AMBER, 2500)
+            else
+                inv:AddInventory(want, add)
+                local now = item:GetInventoryItemNum(want) or (have + add)
+                reply("ok", string.format("item=%d\nadded=%d\ncount=%d\nmax=%d\n", want, now - have, now, max))
+                toast(string.format(tr("已添加 %s ×%d（现有 %d）", "Added %s x%d (now %d)"), entry.name, now - have, now), GREEN, 2500)
+                log("add item %d (%s): +%d -> %d (max %d)", want, entry.name, now - have, now, max)
+            end
+        end
+    else
+        reply(loaded and "list" or "nosave")
+    end
+    writeItemList(items, inv, item, loaded)
+end
+
+gameLoop(500, function()
+    local ok, err = pcall(checkItemRequest)
+    if not ok then
+        log("add item error: %s", tostring(err))
+        local serial = lastItemReq or "0"
+        writeFile(ITEM_RES, "id=" .. serial .. "\nresult=error\n")
+    end
+end)
+
+------------------------------------------------------------------------
 -- Map markers for chests and shining spots (scripts/markers.lua, based on
 -- "Item and Chest Markers" by ZArkadia). Needs the zzz_TreasureMinimap_P pak.
 ------------------------------------------------------------------------

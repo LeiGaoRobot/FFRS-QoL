@@ -9,3 +9,6 @@ dev/
 # Build output
 *.zip
 lb_state.txt
+items.txt
+item_request.txt
+item_result.txt
