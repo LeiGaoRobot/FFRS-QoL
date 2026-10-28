@@ -57,11 +57,14 @@ $Defaults = [ordered]@{
     AlwaysEscape       = '0'
     ItemLimit          = '99'
     APCapacityBonus    = '0'
+    AbilitySlots       = '8'
     MapMarkers         = '1'
     LBGainMultiplier   = '1.00'
     PersistentLB       = '0'
     AutoRepeat         = '0'
     SmartSupport       = '1'
+    LibraScanAll       = '1'
+    AutoLibra          = '0'
     AutoOpenSettings   = '1'
     ToggleEncounterKey = 'F6'
     CycleMultiplierKey = 'F7'
@@ -248,9 +251,17 @@ $chkEscape = New-Object System.Windows.Forms.CheckBox
 $chkEscape.Text = T '逃跑必定成功' 'Escape always succeeds'
 $chkEscape.Location = New-Object System.Drawing.Point(14, 62); $chkEscape.Size = New-Object System.Drawing.Size(440, 26)
 $grpBattle.Controls.Add($chkEscape)
-$escHint = New-Label (T '只对允许逃跑的战斗生效；Boss 战、剧情战不受影响' 'Only where fleeing is allowed; not bosses or story battles') 32 88 480 22
-$escHint.ForeColor = $grey
-$grpBattle.Controls.Add($escHint)
+$tips.SetToolTip($chkEscape, (T '只对允许逃跑的战斗生效；Boss 战、剧情战不受影响' 'Only where fleeing is allowed; not bosses or story battles'))
+$chkLibraAll = New-Object System.Windows.Forms.CheckBox
+$chkLibraAll.Text = T 'Libra 扫描全体敌人' 'Libra scans all enemies'
+$chkLibraAll.Location = New-Object System.Drawing.Point(14, 88); $chkLibraAll.Size = New-Object System.Drawing.Size(230, 26)
+$grpBattle.Controls.Add($chkLibraAll)
+$tips.SetToolTip($chkLibraAll, (T "Libra、Mechamog Scan（以及使用它们的道具）一次扫描所有敌人，图鉴和弱点照常记录。`n只改内存里的技能表，关掉即恢复。" "Libra and Mechamog Scan (and items that cast them) scan every enemy at once; the bestiary and weaknesses update as usual.`nOnly changes the skill table in memory; turning it off restores it."))
+$chkAutoLibra = New-Object System.Windows.Forms.CheckBox
+$chkAutoLibra.Text = T '自动 Libra（写入存档）' 'Auto Libra (saved)'
+$chkAutoLibra.Location = New-Object System.Drawing.Point(250, 88); $chkAutoLibra.Size = New-Object System.Drawing.Size(260, 26)
+$grpBattle.Controls.Add($chkAutoLibra)
+$tips.SetToolTip($chkAutoLibra, (T "战斗开始时自动扫描所有敌人，包括弱点和抗性，第一次遇到的敌人也一样。`n和真正的 Libra 一样会记入图鉴，存档后关掉也不会恢复。" "Every enemy is scanned as the battle starts, weaknesses and resistances included, even the first time you meet it.`nLike a real Libra it goes into the bestiary, and stays after saving even if you turn this off."))
 $grpBattle.Controls.Add((New-Label (T 'LB 充能' 'LB gain') 14 116 96 26))
 $nuLB = New-Object System.Windows.Forms.NumericUpDown
 $nuLB.Minimum = 0; $nuLB.Maximum = 10; $nuLB.DecimalPlaces = 1; $nuLB.Increment = 0.5
@@ -311,7 +322,14 @@ $nuAP = New-Object System.Windows.Forms.NumericUpDown
 $nuAP.Minimum = 0; $nuAP.Maximum = 9999; $nuAP.Increment = 50
 $nuAP.Location = New-Object System.Drawing.Point(112, 62); $nuAP.Size = New-Object System.Drawing.Size(84, 26)
 $grpItem.Controls.Add($nuAP)
-$apHint = New-Label (T '所有角色都加，读档后生效' 'All characters; reload a save') 202 60 232 26
+$tips.SetToolTip($nuAP, (T '提高所有角色装备能力的 AP 上限，读档后生效' 'Raises every character''s ability AP limit; shows after loading a save'))
+$grpItem.Controls.Add((New-Label (T '能力栏' 'Slots') 202 60 70 26))
+$nuSlots = New-Object System.Windows.Forms.NumericUpDown
+$nuSlots.Minimum = 8; $nuSlots.Maximum = 12; $nuSlots.Increment = 1
+$nuSlots.Location = New-Object System.Drawing.Point(272, 62); $nuSlots.Size = New-Object System.Drawing.Size(48, 26)
+$grpItem.Controls.Add($nuSlots)
+$tips.SetToolTip($nuSlots, (T "每个角色的能力栏格数（原版 8，最多 12），读档后生效。`n格子多了需要更多 AP，可以配合左边的 AP 上限加成。`n调低时，已经装在多出格子里的能力会保留，可以手动卸除。" "Ability slots per character (the game has 8, up to 12); shows after loading a save.`nMore slots need more AP: raise the AP limit on the left.`nLowering it keeps abilities already in the extra slots; unequip them by hand."))
+$apHint = New-Label (T '读档后生效' 'after reload') 324 60 114 26
 $apHint.ForeColor = $grey
 $grpItem.Controls.Add($apHint)
 $grpItem.Controls.Add((New-Label (T '添加物品' 'Add item') 14 94 96 26))
@@ -483,10 +501,14 @@ function Show-Config($cfg) {
     $chkEscape.Checked = ($cfg.AlwaysEscape -eq '1' -or $cfg.AlwaysEscape -eq 'true')
     $chkRepeat.Checked = ($cfg.AutoRepeat -eq '1' -or $cfg.AutoRepeat -eq 'true')
     $chkSmart.Checked = ($cfg.SmartSupport -eq '1' -or $cfg.SmartSupport -eq 'true')
+    $chkLibraAll.Checked = ($cfg.LibraScanAll -eq '1' -or $cfg.LibraScanAll -eq 'true')
+    $chkAutoLibra.Checked = ($cfg.AutoLibra -eq '1' -or $cfg.AutoLibra -eq 'true')
     $il = 99; [void][int]::TryParse([string]$cfg.ItemLimit, [ref]$il)
     $nuItem.Value = [Math]::Min(9999, [Math]::Max(99, $il))
     $ap = 0; [void][int]::TryParse([string]$cfg.APCapacityBonus, [ref]$ap)
     $nuAP.Value = [Math]::Min(9999, [Math]::Max(0, $ap))
+    $slots = 8; [void][int]::TryParse([string]$cfg.AbilitySlots, [ref]$slots)
+    $nuSlots.Value = [Math]::Min(12, [Math]::Max(8, $slots))
     $k3 = $cfg.RepeatCommandKey; if ($KeyChoices -notcontains $k3) { $k3 = 'F9' }
     $k4 = $cfg.AutoRepeatKey; if ($KeyChoices -notcontains $k4) { $k4 = 'F8' }
     $cbRepeat.SelectedItem = $k3; $cbAutoRep.SelectedItem = $k4
@@ -519,8 +541,11 @@ function Collect-Config {
     $cfg.AlwaysEscape       = if ($chkEscape.Checked) { '1' } else { '0' }
     $cfg.AutoRepeat         = if ($chkRepeat.Checked) { '1' } else { '0' }
     $cfg.SmartSupport       = if ($chkSmart.Checked) { '1' } else { '0' }
+    $cfg.LibraScanAll       = if ($chkLibraAll.Checked) { '1' } else { '0' }
+    $cfg.AutoLibra          = if ($chkAutoLibra.Checked) { '1' } else { '0' }
     $cfg.ItemLimit          = ([int]$nuItem.Value).ToString()
     $cfg.APCapacityBonus    = ([int]$nuAP.Value).ToString()
+    $cfg.AbilitySlots       = ([int]$nuSlots.Value).ToString()
     $cfg.RepeatCommandKey   = [string]$cbRepeat.SelectedItem
     foreach ($pair in @(@($pdEnc, 'ToggleEncounterPad'), @($pdMul, 'CycleMultiplierPad'),
                         @($pdRepeat, 'RepeatCommandPad'), @($pdAutoRep, 'AutoRepeatPad'))) {
@@ -574,6 +599,8 @@ $chkAuto.Add_CheckedChanged({ Request-Save })
 $chkEscape.Add_CheckedChanged({ Request-Save })
 $chkRepeat.Add_CheckedChanged({ Request-Save })
 $chkSmart.Add_CheckedChanged({ Request-Save })
+$chkLibraAll.Add_CheckedChanged({ Request-Save })
+$chkAutoLibra.Add_CheckedChanged({ Request-Save })
 $cbRepeat.Add_SelectedIndexChanged({ Request-Save })
 $cbAutoRep.Add_SelectedIndexChanged({ Request-Save })
 foreach ($pd in @($pdEnc, $pdMul, $pdRepeat, $pdAutoRep)) {
@@ -582,6 +609,7 @@ foreach ($pd in @($pdEnc, $pdMul, $pdRepeat, $pdAutoRep)) {
 $nuSpeed.Add_ValueChanged({ Request-Save })
 $nuItem.Add_ValueChanged({ Request-Save })
 $nuAP.Add_ValueChanged({ Request-Save })
+$nuSlots.Add_ValueChanged({ Request-Save })
 foreach ($r in $rows) {
     $tb = $sliders[$r.Key]; $nu = $spinners[$r.Key]
     $tb.Add_ValueChanged({

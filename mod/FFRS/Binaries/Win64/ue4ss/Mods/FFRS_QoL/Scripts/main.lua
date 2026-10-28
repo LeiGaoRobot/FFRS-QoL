@@ -58,11 +58,14 @@ local Defaults = {
     AlwaysEscape       = false,
     ItemLimit          = 99,
     APCapacityBonus    = 0,
+    AbilitySlots       = 8,
     MapMarkers         = true,
     LBGainMultiplier   = 1.0,
     PersistentLB       = false,
     AutoRepeat         = false,
     SmartSupport       = true,
+    LibraScanAll       = true,
+    AutoLibra          = false,
     AutoOpenSettings   = true,
     UILanguage         = "auto",
     ToggleEncounterKey = "F6",
@@ -76,8 +79,8 @@ local Defaults = {
     CyclePresets       = "1,2,3,5",
 }
 local Order = { "EncountersEnabled", "EncounterRate", "ExpMultiplier", "MoneyMultiplier", "MRPointMultiplier", "DropMultiplier",
-                "RareAlwaysDrop", "APMultiplier", "BattleSpeedMultiplier", "AlwaysEscape", "ItemLimit", "APCapacityBonus", "MapMarkers", "LBGainMultiplier", "PersistentLB", "AutoRepeat", "SmartSupport",
-                "AutoOpenSettings", "UILanguage", "ToggleEncounterKey", "CycleMultiplierKey", "AutoRepeatKey", "RepeatCommandKey",
+                "RareAlwaysDrop", "APMultiplier", "BattleSpeedMultiplier", "AlwaysEscape", "ItemLimit", "APCapacityBonus", "AbilitySlots", "MapMarkers", "LBGainMultiplier", "PersistentLB", "AutoRepeat", "SmartSupport",
+                "LibraScanAll", "AutoLibra", "AutoOpenSettings", "UILanguage", "ToggleEncounterKey", "CycleMultiplierKey", "AutoRepeatKey", "RepeatCommandKey",
                 "ToggleEncounterPad", "CycleMultiplierPad", "RepeatCommandPad", "AutoRepeatPad",
                 "CyclePresets" }
 
@@ -94,7 +97,7 @@ local function clampMult(x, fallback)
 end
 
 -- Whole-number settings with their own range (not multipliers).
-local IntRange = { ItemLimit = { 99, 9999 }, APCapacityBonus = { 0, 9999 } }
+local IntRange = { ItemLimit = { 99, 9999 }, APCapacityBonus = { 0, 9999 }, AbilitySlots = { 8, 12 } }
 local function clampInt(k, x)
     x = tonumber(x)
     if not x then return Defaults[k] end
@@ -188,11 +191,11 @@ end
 -- One scan of all DataTables per apply, grouped by row struct name.
 local Wanted = { GAME_DIFFICULTY_PARAM = true, UNIT_PARAMETER = true, MAP_DATA = true,
                  BTL_GENERAL_DATA = true, BATTLE_GROUP_DATA = true, UNIT_PARAMETER_CALC_DATA = true,
-                 SKILL_EFFECT_DATA = true }
+                 SKILL_EFFECT_DATA = true, SKILL_DATA = true }
 local function collectTables()
     local out = { GAME_DIFFICULTY_PARAM = {}, UNIT_PARAMETER = {}, MAP_DATA = {},
                   BTL_GENERAL_DATA = {}, BATTLE_GROUP_DATA = {}, UNIT_PARAMETER_CALC_DATA = {},
-                  SKILL_EFFECT_DATA = {} }
+                  SKILL_EFFECT_DATA = {}, SKILL_DATA = {} }
     local tables = FindAllOf("DataTable")
     if not tables then return out end
     for _, dt in ipairs(tables) do
@@ -238,10 +241,15 @@ local function applyMultipliers(list)
     stats.difficultyRows = rows
 end
 
--- Ability AP capacity: every character's base capacity is UNIT_PARAMETER_CALC_DATA.baseSkillEquipCost
--- (100). The game copies it into each character when a save is loaded, so changes show after
+-- Ability AP capacity: every character's base capacity is UNIT_PARAMETER_CALC_DATA.baseSkillEquipCost.
+-- The game copies it into each character when a save is loaded, so changes show after
 -- loading a save (or at game start).
-local origAPBase = {}
+-- Ability slots: maxAciontListNum (8) in the same row is the number of ability slots. When the game
+-- builds a character from the save it pads the equipped list up to this number, and the
+-- equipment screen only lets you equip into slots below it, so raising it gives every character
+-- more slots after loading a save. Lowering it keeps abilities that are already equipped beyond
+-- the limit (the game never drops them); they can still be unequipped.
+local origAPBase, origSlots = {}, {}
 local function applyAPCapacity(list)
     for _, t in ipairs(list) do
         t.dt:ForEachRow(function(rowName, row)
@@ -251,6 +259,11 @@ local function applyAPCapacity(list)
             local want = o + cfg.APCapacityBonus
             if row.baseSkillEquipCost ~= want then row.baseSkillEquipCost = want end
             stats.apBase = want
+            local s = origSlots[key]
+            if not s then s = row.maxAciontListNum; origSlots[key] = s end
+            local slots = math.max(s, cfg.AbilitySlots)
+            if row.maxAciontListNum ~= slots then row.maxAciontListNum = slots end
+            stats.abilitySlots = slots
         end)
     end
 end
@@ -303,6 +316,63 @@ local function applyLBGain(effectTables, calcTables)
     end
     stats.lbEffects = n
     lastLBKey = key
+end
+
+-- Libra on every enemy. Scan skills (Libra, Mechamog Scan, and items that cast them) are SKILL_DATA
+-- rows whose effect is a scan, on the row itself or in one of its effect bundles (SKILL_EFFECT_DATA):
+-- Analyze (eSkillEffectType 29, Libra 210220) or MechaMogscan (142, Mechamog Scan 404120, which also
+-- gives the target a random elemental weakness). Those that target one enemy (TargetType Single) are
+-- switched to Group, the whole enemy side; the game's own scan then runs on every target, so the
+-- bestiary, the Libra window and weakness reveals work as usual. Only the loaded table changes, and
+-- turning the setting off puts the original target type back.
+local SCAN_EFFECTS = { [29] = true, [142] = true }
+local TARGET_TYPE_SINGLE, TARGET_TYPE_GROUP, RELATION_ENEMIES = 1, 2, 2
+local origLibraTarget = {}   -- "path|row" -> original TargetType (scan skills only)
+local lastLibraKey = nil
+local function applyLibraTargets(skillTables, effectTables)
+    local key = signature(skillTables) .. "|" .. signature(effectTables) .. "|" .. tostring(cfg.LibraScanAll)
+    if key == lastLibraKey then return end
+    local analyze = {}
+    for _, t in ipairs(effectTables) do
+        t.dt:ForEachRow(function(_, row)
+            if SCAN_EFFECTS[row.EffectType] then analyze[row.ID] = true end
+        end)
+    end
+    local n, names = 0, {}
+    for _, t in ipairs(skillTables) do
+        t.dt:ForEachRow(function(rowName, row)
+            local k = t.path .. "|" .. rowName
+            local o = origLibraTarget[k]
+            if o == nil then
+                local scan = SCAN_EFFECTS[row.skillEffectType] == true
+                if not scan then
+                    row.effectBundleList:ForEach(function(_, e)
+                        local b = e:get()
+                        if analyze[b.effectId] then scan = true end
+                    end)
+                end
+                o = false
+                if scan and row.TargetType == TARGET_TYPE_SINGLE and row.defaultTargetRelation == RELATION_ENEMIES then
+                    o = row.TargetType
+                end
+                origLibraTarget[k] = o
+            end
+            if o then
+                local want = cfg.LibraScanAll and TARGET_TYPE_GROUP or o
+                if row.TargetType ~= want then row.TargetType = want end
+                n = n + 1
+                if #names < 6 then
+                    local okN, nm = pcall(function() return row.Name:ToString() end)
+                    names[#names + 1] = string.format("%s(%s)", tostring(row.ID), okN and tostring(nm) or "?")
+                end
+            end
+        end)
+    end
+    stats.libraSkills = n
+    if n > 0 or #skillTables > 0 then
+        log("libra scan all %s: %d scan skill(s) %s", cfg.LibraScanAll and "ON" or "OFF", n, table.concat(names, " "))
+    end
+    lastLibraKey = key
 end
 
 -- Dev helpers: active only when the mod folder has a "dev" subfolder.
@@ -558,6 +628,7 @@ local function applyAll()
         applyBattleGroups(t.BATTLE_GROUP_DATA)
         applyAPCapacity(t.UNIT_PARAMETER_CALC_DATA)
         applyLBGain(t.SKILL_EFFECT_DATA, t.UNIT_PARAMETER_CALC_DATA)
+        applyLibraTargets(t.SKILL_DATA, t.SKILL_EFFECT_DATA)
         applyPlayerThreshold()
     end)
     stats.lastError = ok and "" or tostring(err)
@@ -654,7 +725,13 @@ local function writeStatus()
         string.format("LBGain=%.2f", cfg.LBGainMultiplier),
         "LBEffects=" .. tostring(stats.lbEffects or ""),
         "PersistentLB=" .. (cfg.PersistentLB and "1" or "0"),
+        "LibraScanAll=" .. (cfg.LibraScanAll and "1" or "0"),
+        "LibraSkills=" .. tostring(stats.libraSkills or ""),
+        "AutoLibra=" .. (cfg.AutoLibra and "1" or "0"),
+        "AutoLibraScanned=" .. tostring(stats.autoLibraScanned or 0),
         "APBase=" .. tostring(stats.apBase or ""),
+        "AbilitySlots=" .. tostring(stats.abilitySlots or ""),
+        "PanelFit=" .. tostring(stats.panelFit or ""),
         "ItemLimitResult=" .. itemLimitResult(),
         "ShopDialogResult=" .. ((readFile(DIR .. "/itemlimit_bp_status.txt") or ""):match("ShopDialogResult=([^\r\n]*)") or ""),
         "Encounters=" .. (cfg.EncountersEnabled and "1" or "0"),
@@ -1712,6 +1789,271 @@ gameLoop(1000, function()
         local v = bfl:GetUnitLimitBurstPoint(uid)
         if type(v) == "number" and v >= 0 and LB.saved[unitId] ~= v then LB.saved[unitId] = v; LB.dirty = true end
     end)
+end)
+
+------------------------------------------------------------------------
+-- Auto Libra: every enemy in a battle counts as scanned as soon as it appears, weaknesses
+-- included. It does what a real Libra does to the save: the scan flag (CPP_BFL_SaveDataUnit
+-- SetAnalyze) and every element reaction in the enemy's bestiary entry, so it stays once the game
+-- is saved. Off by default for that reason.
+------------------------------------------------------------------------
+local Libra = { done = {}, inBattle = false, sdm = nil }
+local function libraSaveData()
+    if not (Libra.sdm and Libra.sdm:IsValid()) then Libra.sdm = FindFirstOf("CPP_MuchaSaveDataManager") end
+    local sd = Libra.sdm and Libra.sdm:IsValid() and Libra.sdm.m_pGameSaveData or nil
+    if sd and sd:IsValid() then return sd end
+    return nil
+end
+local function battleEnemyIds()
+    local ids = {}
+    local bm = FindFirstOf("CPP_BtlManager")
+    local um = bm and bm:IsValid() and bm.m_pUnitManager or nil
+    local list = um and um:IsValid() and um.m_UnitList or nil
+    if not list then return ids end
+    for i = 1, #list do
+        pcall(function()
+            local u = list[i]
+            if not (u and u:IsValid()) then return end
+            local p = u:GetUnitParameter()
+            if p and p:IsValid() and p:GetRelation() == RELATION_ENEMIES then ids[#ids + 1] = p:GetUnitId() end
+        end)
+    end
+    return ids
+end
+gameLoop(500, function()
+    local u = FindFirstOf("CPP_BtlUnit")
+    if not (u and u:IsValid()) then
+        if Libra.inBattle then Libra.inBattle, Libra.done = false, {} end
+        return
+    end
+    Libra.inBattle = true
+    if not cfg.AutoLibra then return end
+    local want, any = {}, false
+    for _, id in ipairs(battleEnemyIds()) do
+        if type(id) == "number" and id > 0 and not Libra.done[id] then want[id] = true; any = true end
+    end
+    if not any then return end
+    local lib = StaticFindObject("/Script/mucha.Default__CPP_BFL_SaveDataUnit")
+    if not (lib and lib:IsValid()) then return end
+    local flagged, elems, ids = 0, 0, {}
+    for id in pairs(want) do
+        Libra.done[id] = true
+        ids[#ids + 1] = tostring(id)
+        if not lib:IsAnalyzed(id) then lib:SetAnalyze(id, true); flagged = flagged + 1 end
+    end
+    local sd = libraSaveData()
+    if sd then
+        sd.unitList:ForEach(function(_, e)
+            local r = e:get()
+            if want[r.SaveId] then
+                pcall(function()
+                    r.analyzedElments:ForEach(function(_, v)
+                        if not v:get() then v:set(true); elems = elems + 1 end
+                    end)
+                end)
+            end
+        end)
+    end
+    stats.autoLibraScanned = (stats.autoLibraScanned or 0) + flagged
+    log("auto libra: enemies [%s], %d newly scanned, %d element(s) revealed", table.concat(ids, ","), flagged, elems)
+end)
+
+------------------------------------------------------------------------
+-- Equipment screen fit. The right-hand panel lists the equipment rows, the Vision and the ability
+-- rows, each 40 units high (a SizeBox in every entry) plus 8 units of spacing. The panel has room for
+-- about 12 such rows (4 equipment + 8 abilities), so extra ability slots (or extra accessory slots
+-- from other mods) run off the bottom. When there are more rows than fit, every equipment and
+-- ability row gets the same smaller height. The game reuses these widgets, so this re-checks while
+-- the screen is open and only writes heights that differ.
+------------------------------------------------------------------------
+do
+local FIT_ROOM, FIT_GAP, FIT_MIN, FIT_MAX = 612, 8, 22, 40   -- units, measured on the 1.0.1 layout
+local Fit = { lists = {}, nextScan = 0 }
+local function widgetClass(w)
+    local ok, n = pcall(function() return w:GetClass():GetFName():ToString() end)
+    return ok and n or ""
+end
+-- Every widget of class `want` under w, descending into child panels and user widgets.
+local function collectWidgets(w, want, acc, seen, depth)
+    if depth > 10 or not (w and w:IsValid()) then return end
+    if widgetClass(w) == want then
+        local a = w:GetAddress()
+        if not seen[a] then seen[a] = true; acc[#acc + 1] = w end
+        return
+    end
+    local okN, n = pcall(function() return w:GetChildrenCount() end)
+    if okN and n then for i = 0, n - 1 do collectWidgets(w:GetChildAt(i), want, acc, seen, depth + 1) end end
+    local okT, root = pcall(function() return w.WidgetTree.RootWidget end)
+    if okT and root and root:IsValid() then collectWidgets(root, want, acc, seen, depth + 1) end
+end
+local function firstSizeBox(w, depth)
+    depth = depth or 0
+    if depth > 8 or not (w and w:IsValid()) then return nil end
+    if widgetClass(w) == "SizeBox" then return w end
+    local okN, n = pcall(function() return w:GetChildrenCount() end)
+    if okN and n then
+        for i = 0, n - 1 do local r = firstSizeBox(w:GetChildAt(i), depth + 1); if r then return r end end
+    end
+    local okT, root = pcall(function() return w.WidgetTree.RootWidget end)
+    if okT and root and root:IsValid() then return firstSizeBox(root, depth + 1) end
+    return nil
+end
+local function visibleOnly(t)
+    local r = {}
+    for _, w in ipairs(t) do if w:IsVisible() then r[#r + 1] = w end end
+    return r
+end
+local function fitEquipmentPanel(list)
+    local box = list:GetParent()                       -- VerticalBox_List: item list, Vision, abilities
+    if not (box and box:IsValid()) then return end
+    local items, skills = {}, {}
+    collectWidgets(box:GetChildAt(0), "WBP_UnitEquippedItemEntry_C", items, {}, 0)
+    collectWidgets(list, "WBP_UnitEquippedSkillEntry_C", skills, {}, 0)
+    items, skills = visibleOnly(items), visibleOnly(skills)
+    local rows = #items + #skills
+    if rows == 0 then return end
+    local h = math.floor(FIT_ROOM / rows) - FIT_GAP
+    if h > FIT_MAX then h = FIT_MAX end
+    if h < FIT_MIN then h = FIT_MIN end
+    local changed = 0
+    for _, group in ipairs({ items, skills }) do
+        for _, w in ipairs(group) do
+            local sb = firstSizeBox(w)
+            if sb and math.abs((sb.HeightOverride or 0) - h) > 0.01 then sb:SetHeightOverride(h); changed = changed + 1 end
+        end
+    end
+    stats.panelFit = string.format("%d+%d rows, height %d", #items, #skills, h)
+    if changed > 0 and devEnabled() then log("equipment panel: %s (%d widgets resized)", stats.panelFit, changed) end
+end
+gameLoop(400, function()
+    local now = os.clock()
+    local open = nil
+    for _, w in ipairs(Fit.lists) do
+        if w:IsValid() and w:IsVisible() then open = w; break end
+    end
+    if not open and now >= Fit.nextScan then
+        Fit.nextScan = now + 3
+        Fit.lists = {}
+        for _, w in ipairs(FindAllOf("WBP_UnitEquippedSkillList_C") or {}) do
+            if w:IsValid() then
+                Fit.lists[#Fit.lists + 1] = w
+                if not open and w:IsVisible() then open = w end
+            end
+        end
+    end
+    if open then fitEquipmentPanel(open) end
+end)
+end
+
+------------------------------------------------------------------------
+-- Auto-resolve compatibility. Mods like FFRS_AutoResolve settle a random encounter on the map
+-- without opening a battle and grant the enemies' base EXP and Gil themselves, so the
+-- difficulty-table multipliers above never reach them. In the base game a win only comes from a
+-- battle, so a win that appears on the map (win count +1, no battle) marks one: the EXP each
+-- character gained and the Gil gained at that moment are scaled by ExpMultiplier and
+-- MoneyMultiplier. MR is left alone (reported to follow the MR multiplier already).
+------------------------------------------------------------------------
+local AR = { base = nil, quietUntil = 0, libs = nil }
+local AR_POLL_MS, AR_GRACE_S = 200, 5
+
+local function arLibs()
+    local l = AR.libs
+    if l and l.player:IsValid() and l.party:IsValid() and l.unitSave:IsValid() and l.unit:IsValid() then return l end
+    AR.libs = nil
+    local player = StaticFindObject("/Script/mucha.Default__CPP_BFL_SaveDataPlayer")
+    local party = StaticFindObject("/Script/mucha.Default__CPP_BFL_SaveDataParty")
+    local unitSave = StaticFindObject("/Script/mucha.Default__CPP_BFL_SaveDataUnit")
+    local unit = StaticFindObject("/Script/mucha.Default__CPP_BFL_Unit")
+    for _, o in ipairs({ player, party, unitSave, unit }) do
+        if not (o and o:IsValid()) then return nil end
+    end
+    AR.libs = { player = player, party = party, unitSave = unitSave, unit = unit }
+    return AR.libs
+end
+
+-- Win count, Gil and every joined character's EXP, tied to the current pawn (a new pawn means a
+-- map change or a loaded save, which must not count as a gain).
+local function arSnapshot(l)
+    local pc = playerController()
+    local pawn = pc and pc.Pawn
+    if not (pawn and pawn:IsValid()) then return nil end
+    local s = { pawn = pawn:GetAddress(), win = l.player:GetWinNum(), money = l.player:GetCurrentMoney(), exp = {} }
+    if type(s.win) ~= "number" or type(s.money) ~= "number" then return nil end
+    for _, id in ipairs(outList(function(t) l.party:GetJoinPartyUnitList(t) end)) do
+        if type(id) == "number" and id > 0 then
+            local e = l.unitSave:GetSaveDataUnitExperience(id)
+            if type(e) == "number" then s.exp[id] = e end
+        end
+    end
+    return s
+end
+
+local function arScale(delta, mult)
+    return math.floor(delta * mult + 0.5)
+end
+
+-- Applies the multipliers to one auto-resolved encounter (prev -> cur). Returns a log summary.
+local function arApply(l, prev, cur)
+    local parts, expShown = {}, nil
+    if math.abs(cfg.ExpMultiplier - 1) > 0.001 then
+        for id, e in pairs(cur.exp) do
+            local before = prev.exp[id]
+            if before and e > before then
+                local want = before + arScale(e - before, cfg.ExpMultiplier)
+                if want ~= e then
+                    l.unit:SetPlayableUnitExperience(id, want, false)
+                    local got = l.unitSave:GetSaveDataUnitExperience(id)
+                    cur.exp[id] = type(got) == "number" and got or want
+                    parts[#parts + 1] = string.format("unit %d exp %d->%d (+%d -> +%d)", id, before, cur.exp[id], e - before, cur.exp[id] - before)
+                    expShown = expShown or (cur.exp[id] - before)
+                end
+            end
+        end
+    end
+    if math.abs(cfg.MoneyMultiplier - 1) > 0.001 and cur.money > prev.money then
+        local want = prev.money + arScale(cur.money - prev.money, cfg.MoneyMultiplier)
+        local cap = l.player:GetMaxNumMoney()
+        if type(cap) == "number" and cap > 0 and want > cap then want = cap end
+        if want ~= cur.money then
+            l.player:SetCurrentMoney(want, true, false)
+            parts[#parts + 1] = string.format("gil %d->%d", cur.money - prev.money, want - prev.money)
+            cur.money = want
+        end
+    end
+    if #parts > 0 then
+        toast(string.format(tr("自动结算：已按倍率补正 (EXP ×%g, Gil ×%g)", "Auto-resolve: EXP x%g, Gil x%g applied"),
+            cfg.ExpMultiplier, cfg.MoneyMultiplier), GREEN)
+    end
+    return table.concat(parts, ", ")
+end
+
+gameLoop(AR_POLL_MS, function()
+    local u = FindFirstOf("CPP_BtlUnit")
+    if (u and u:IsValid()) or Hud.inBattle then
+        -- Normal battles apply the multipliers themselves; start over once the result is written.
+        AR.base, AR.quietUntil = nil, os.time() + AR_GRACE_S
+        return
+    end
+    if os.time() < AR.quietUntil then AR.base = nil; return end
+    local l = arLibs()
+    if not l then AR.base = nil; return end
+    local cur = arSnapshot(l)
+    local prev = AR.base
+    AR.base = cur
+    if not (cur and prev) or cur.pawn ~= prev.pawn then return end
+    if cur.win ~= prev.win + 1 then return end
+    local gained = false
+    for id, e in pairs(cur.exp) do
+        local before = prev.exp[id]
+        if before and e > before then gained = true end
+    end
+    if not gained and cur.money <= prev.money then return end
+    local ok, summary = pcall(arApply, l, prev, cur)
+    if ok then
+        if summary ~= "" then log("auto-resolve detected: %s", summary) end
+    else
+        log("auto-resolve fix failed: %s", tostring(summary))
+    end
 end)
 
 ------------------------------------------------------------------------
