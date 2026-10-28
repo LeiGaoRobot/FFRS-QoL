@@ -2204,8 +2204,17 @@ log("loaded from %s (%s = encounters, %s = cycle multiplier, %s = repeat command
 ------------------------------------------------------------------------
 -- Open the settings window when the game starts (the window keeps itself single-instance
 -- and closes when the game exits). Uses `start`, so it returns immediately.
+-- The Nexus download leaves the window out (Nexus quarantines .ps1 files); settings are then
+-- edited in config.ini or MogHub's in-game Mods menu.
 ------------------------------------------------------------------------
-if cfg.AutoOpenSettings then
+local function settingsWindowInstalled()
+    local f = io.open(DIR .. "/Settings.ps1", "r")
+    if f then f:close(); return true end
+    return false
+end
+if cfg.AutoOpenSettings and not settingsWindowInstalled() then
+    log("settings window not installed (Settings.ps1 missing); edit config.ini or use MogHub")
+elseif cfg.AutoOpenSettings then
     local ps1 = (DIR .. "/Settings.ps1"):gsub("/", "\\")
     local cmd = string.format(
         'start "" conhost.exe --headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File "%s" -FromGame', ps1)
