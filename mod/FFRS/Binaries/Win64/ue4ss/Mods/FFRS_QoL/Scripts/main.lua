@@ -1077,6 +1077,28 @@ local function currentPhase()
     return (ok and type(phase) == "number") and phase or 0
 end
 
+-- True while the player is in the middle of a multi-step choice (W臂腕's second command, the
+-- spell after 魔力增幅...): the battle command view model keeps the chosen parent commands in
+-- AncestorIdList, e.g. [1, 400650] on W's second command, and it is empty (or only holds menu
+-- ids like 1) on a unit's first menu and after going back. nil when it can't be read.
+local function midTurnChoice()
+    local ok, res = pcall(function()
+        local vm = FindFirstOf("CPP_VM_BtlCmd")
+        if not (vm and vm:IsValid()) then return nil end
+        local found = false
+        vm.AncestorIdList:ForEach(function(_, e)
+            if e:get() >= 100000 then found = true end   -- skill ids; menu ids are small
+        end)
+        return found
+    end)
+    if ok and type(res) == "boolean" then return res end
+    return nil
+end
+
+-- 100 ms ticks, to time short windows (Lua has no wall clock finer than a second here).
+Rep.ticks = 0
+gameLoop(100, function() Rep.ticks = Rep.ticks + 1 end)
+
 local function copyInts(arr)
     local t = {}
     arr:ForEach(function(_, e) t[#t + 1] = e:get() end)
@@ -1106,7 +1128,7 @@ local function outOfControl(uid)
 end
 
 -- Record every decided command.
-local okRec, errRec = pcall(function()
+do local okRec, errRec = pcall(function()
     RegisterHook("/Script/mucha.CPP_BtlDelEventCmd:OnExecuteDecideCommand", function(ctx, value)
         local ok, err = pcall(function()
             local v = value:get()
@@ -1135,7 +1157,7 @@ local okRec, errRec = pcall(function()
             end
             local actor = c.items[1].unit
             Rep.lastDecidedActor = actor
-            Rep.decidedSinceMenu, Rep.subMenu = true, false
+            Rep.decidedSinceMenu, Rep.subMenu, Rep.pendingPress = true, false, nil
             -- A confused/charmed/berserk unit's targets are not the player's choice: keep the
             -- previous record instead.
             local st = outOfControl(actor)
@@ -1159,7 +1181,7 @@ local okRec, errRec = pcall(function()
         if not ok then log("repeat record error: %s", tostring(err)) end
     end)
 end)
-if not okRec then log("repeat: could not hook command decisions: %s", tostring(errRec)) end
+if not okRec then log("repeat: could not hook command decisions: %s", tostring(errRec)) end end
 
 local function unitAlive(id)
     local bfl = battleLib()
@@ -1423,9 +1445,12 @@ end
 -- Returns true, note, summary when sent (note explains a fallback), or false, reason.
 local function replay(source)
     local notNow = tr("现在不能重复（请在选指令时使用）", "Can't repeat now (use it while choosing a command)")
-    if not Rep.menuOpen then repLog("%s: command menu not open", source); return false, notNow end
+    Rep.lastFail = nil
+    if not Rep.menuOpen then repLog("%s: command menu not open", source); Rep.lastFail = "closed"; return false, notNow end
     local actor = currentActor()
     if actor == nil or actor < 0 then repLog("%s: no acting unit", source); return false, notNow end
+    local mid = midTurnChoice()
+    if mid ~= nil then Rep.subMenu = mid end
     if Rep.subMenu then
         repLog("%s: unit %d is choosing a W second command", source, actor)
         return false, tr("正在选择 W 的第二个指令，请手动选完", "Choosing the second W command; finish it by hand")
@@ -1513,11 +1538,29 @@ end
 -- Dev only: let dev/eval.lua inspect and drive repeat (tests without menu input).
 if DEV_REPEAT then
     _G.FFRS_Repeat = { Rep = Rep, replay = replay, outOfControl = outOfControl, pickTargets = pickTargets,
-                       describe = describe, totalCost = totalCost, skillInfo = skillInfo }
+                       describe = describe, totalCost = totalCost, skillInfo = skillInfo,
+                       midTurnChoice = midTurnChoice }
+end
+
+-- Repeat key / pad press. A press that lands while the acting unit's command list is closed for
+-- a moment (it switches lists, e.g. RT to the Limit list, or the game also took the button) is
+-- kept for 1.5 s and carried out when that unit's list reopens.
+local function repeatPressed(source)
+    local ok, sent, why, summary = pcall(replay, source)
+    if not ok then log("repeat error: %s", tostring(sent)); toast(tr("重复失败", "Repeat failed"), AMBER); return end
+    if not sent and Rep.lastFail == "closed" and source == "key" and Hud.inBattle
+        and Rep.menuActor ~= nil and Rep.menuActor == currentActor() and not Rep.decidedSinceMenu then
+        Rep.pendingPress = { actor = Rep.menuActor, at = Rep.ticks }
+        repLog("key: unit %d's list is closed, repeating when it reopens", Rep.menuActor)
+        return
+    end
+    if sent and why then toast(why, AMBER, 2600)
+    elseif sent then toast(tr("重复：", "Repeat: ") .. (summary or ""), GREEN, 1500)
+    else toast(why or tr("重复失败", "Repeat failed"), AMBER, 2200) end
 end
 
 -- Track the command menu; in auto mode, replay shortly after it opens.
-local okMenu, errMenu = pcall(function()
+do local okMenu, errMenu = pcall(function()
     RegisterHook("/Script/mucha.CPP_MuchaEventDispatcher:ExecuteEvent", function(ctx, tag)
         local okT, t = pcall(function() return tag:get().TagName:ToString() end)
         if not okT then return end
@@ -1528,16 +1571,30 @@ local okMenu, errMenu = pcall(function()
                 Hud.inBattle = true; updateBadge()
                 Rep.menuActor, Rep.decidedSinceMenu = nil, true
             end
-            -- The same unit's menu opening again before anything was decided is the second step
-            -- of a multi-command choice (W臂腕 and similar): leave it to the player.
+            -- The same unit's list reopening before anything was decided is either the next step
+            -- of a multi-command choice (W臂腕 and similar: left to the player) or the game going
+            -- back to the list (e.g. after the confirm button picked a command). midTurnChoice()
+            -- tells them apart once the list has settled, so it is checked when acting.
             local actor = currentActor()
+            local sameTurn = (actor == Rep.menuActor and not Rep.decidedSinceMenu)
             Rep.fallbackKey = nil
-            Rep.subMenu = (actor == Rep.menuActor and not Rep.decidedSinceMenu)
+            Rep.subMenu = sameTurn
             Rep.menuActor, Rep.decidedSinceMenu = actor, false
-            if DEV_REPEAT then repLog("menu open: actor %d phase %d%s", actor, currentPhase(), Rep.subMenu and " (W second command)" or "") end
-            if cfg.AutoRepeat and not Rep.subMenu then
+            if DEV_REPEAT then repLog("menu open: actor %d phase %d%s", actor, currentPhase(), sameTurn and " (same turn)" or "") end
+            -- A repeat press that landed while this unit's list was closed for a moment: do it now.
+            local p = Rep.pendingPress
+            Rep.pendingPress = nil
+            if p and sameTurn and p.actor == actor and Rep.ticks - p.at <= 15 then
+                gameDelay(150, function()
+                    if Rep.menuOpen and Rep.menuActor == actor and not Rep.decidedSinceMenu then repeatPressed("key (late)") end
+                end)
+            end
+            if cfg.AutoRepeat then
                 local serial = Rep.menuSerial
                 gameDelay(350, function()
+                    local mid = midTurnChoice()
+                    if mid == nil then mid = Rep.subMenu end
+                    if mid then return end   -- W's second command etc.: the player's choice
                     if cfg.AutoRepeat and Rep.menuOpen and Rep.menuSerial == serial then
                         local ok, sent, why = pcall(replay, "auto")
                         if not ok then log("auto repeat error: %s", tostring(sent))
@@ -1550,15 +1607,9 @@ local okMenu, errMenu = pcall(function()
         end
     end)
 end)
-if not okMenu then log("repeat: could not hook battle events: %s", tostring(errMenu)) end
+if not okMenu then log("repeat: could not hook battle events: %s", tostring(errMenu)) end end
 
-bind("RepeatCommandKey", function()
-    local ok, sent, why, summary = pcall(replay, "key")
-    if not ok then log("repeat error: %s", tostring(sent)); toast(tr("重复失败", "Repeat failed"), AMBER); return end
-    if sent and why then toast(why, AMBER, 2600)
-    elseif sent then toast(tr("重复：", "Repeat: ") .. (summary or ""), GREEN, 1500)
-    else toast(why or tr("重复失败", "Repeat failed"), AMBER, 2200) end
-end)
+bind("RepeatCommandKey", function() repeatPressed("key") end)
 
 bind("AutoRepeatKey", function()
     cfg.AutoRepeat = not cfg.AutoRepeat
