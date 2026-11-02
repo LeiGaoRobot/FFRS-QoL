@@ -111,8 +111,8 @@ Change settings by editing `FFRS_QoL/config.ini` (saved changes apply within a s
 
 `FFRS_AbilitySlots_v*.zip` has only the extra ability slots, for players who want those without the rest of FFRS QoL.
 It is its own UE4SS mod, `Mods/FFRS_AbilitySlots`, with the same slot code: 8 to 16 slots per character, an optional AP bonus
-and the equipment-screen fit. Settings are in its `config.ini` (`Slots`, `APBonus`, `FitPanel`), read again every 3 seconds;
-load a save to see new slots. Install UE4SS first, then drag the zip's `FFRS` folder into the game folder.
+and the equipment-screen fit. Settings are in its `config.ini` (`AbilitySlots`, `APCapacityBonus`, `FitEquipmentScreen`), read
+again every second, or in game with MogHub; load a save to see new slots. Install UE4SS first, then drag the zip's `FFRS` folder into the game folder.
 If FFRS QoL is also installed and enabled, FFRS_AbilitySlots does nothing (FFRS QoL has the same settings), so you don't need both.
 
 ## Antivirus note
@@ -148,6 +148,7 @@ standalone/FFRS_AbilitySlots/
   README.txt                  readme of the ability-slots-only zip
   FFRS/Binaries/Win64/ue4ss/Mods/FFRS_AbilitySlots/
     Scripts/main.lua          ability slots, AP bonus, equipment-screen fit
+    moghub.lua, moghub.ini, lang/*.ini   MogHub settings page
     config.ini, enabled.txt
 ```
 
@@ -188,7 +189,7 @@ LB 充能倍率 / LB 槽跨战斗保留、Libra 扫描全体敌人（默认开�
 请直接改 `FFRS_QoL/config.ini` 或用 MogHub。
 
 **只要能力栏**：`FFRS_AbilitySlots_v*.zip` 只包含能力栏扩展（8–16 格、可选 AP 加成、装备画面自适应），是独立的 UE4SS mod，
-设置在它的 `config.ini`（`Slots`、`APBonus`、`FitPanel`）。已启用 FFRS QoL 时它不做任何事，两者装一个即可。
+设置在它的 `config.ini`（`AbilitySlots`、`APCapacityBonus`、`FitEquipmentScreen`），装了 MogHub 也可以在游戏内改。已启用 FFRS QoL 时它不做任何事，两者装一个即可。
 
 **杀毒软件提示**：`ItemLimit.ps1`（物品上限）只修改运行中游戏内存里的 99 上限，不改动硬盘上的游戏文件，
 但部分杀毒软件会误报。不想用可以删掉它，其他功能照常。

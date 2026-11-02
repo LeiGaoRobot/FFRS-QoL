@@ -1,14 +1,23 @@
--- FFRS_AbilitySlots: more ability slots (and optional extra ability AP) for FINAL FANTASY RESONANCE.
--- The ability-slot part of FFRS_QoL as a mod of its own. Settings live in ../config.ini and are
--- read again every 3 seconds. If FFRS_QoL is installed and enabled, this mod does nothing: FFRS_QoL
--- has the same settings (AbilitySlots, APCapacityBonus) and the two would fight over them.
+-- FFRS Ability Slots: more ability slots (8 - 16) per character for FINAL FANTASY RESONANCE.
+-- Settings live in ../config.ini and are read again every second.
+--
+-- How it works: UNIT_PARAMETER_CALC_DATA.maxAciontListNum (8 in the base game) is the number of
+-- ability slots. When a save is loaded the game builds each character's ability list from the save
+-- and pads it up to this number, and the equipment screen only lets you equip into slots below it.
+-- Raising the value before the save loads gives every character more slots; abilities in the extra
+-- slots count on the map and in battle like the others. Lowering it again keeps abilities already
+-- equipped beyond the limit (the game never drops them), and the save only stores filled slots.
+--
+-- The equipment screen has room for about 12 rows (4 equipment + 8 abilities), so the rows are made
+-- shorter when there are more of them.
+--
+-- Part of FFRS QoL (https://github.com/LeiGaoRobot/FFRS-QoL), split out for people who only want
+-- the slots. If FFRS QoL is installed too, this mod stays off and FFRS QoL's own setting is used.
 
 local TAG = "[FFRS_AbilitySlots] "
 local function log(fmt, ...) print(TAG .. string.format(fmt, ...) .. "\n") end
 
-local MIN_SLOTS, MAX_SLOTS = 8, 16
-
--- Timers on the game thread (LoopAsync runs Lua on another thread and is unsafe with UObjects).
+-- Game-thread timers (async timers next to game-thread hooks crashed this game).
 local function gameLoop(ms, fn)
     local function safe()
         local ok, err = pcall(fn)
@@ -18,85 +27,105 @@ local function gameLoop(ms, fn)
     LoopAsync(ms, function() ExecuteInGameThread(safe); return false end)
 end
 
--- Mod folder (parent of Scripts/), from this script's own path.
 local function modDir()
     local ok, info = pcall(function() return debug.getinfo(1, "S") end)
     local src = (ok and info and info.source) or ""
     src = src:gsub("^@", ""):gsub("\\", "/")
-    local dir = src:match("^(.*)/[Ss]cripts/[^/]*$")
-    return dir or "Mods/FFRS_AbilitySlots"
+    return src:match("^(.*)/Scripts/[^/]+$") or "ue4ss/Mods/FFRS_AbilitySlots"
 end
-local MOD_DIR = modDir()
-local MODS_DIR = MOD_DIR:match("^(.*)/[^/]+$") or "Mods"
+local DIR = modDir()
+local CONFIG_PATH = DIR .. "/config.ini"
+local STATUS_PATH = DIR .. "/status.txt"
 
 local function readFile(path)
-    local f = io.open(path, "rb")
+    local f = io.open(path, "r")
     if not f then return nil end
-    local s = f:read("*a")
-    f:close()
-    return s
+    local t = f:read("*a"); f:close()
+    return t
 end
-
--- FFRS_QoL counts as installed when its script is there and UE4SS will load it: an enabled.txt in
--- its folder, or "FFRS_QoL : 1" in mods.txt.
-local function qolEnabled()
-    if not readFile(MODS_DIR .. "/FFRS_QoL/Scripts/main.lua") then return false end
-    if readFile(MODS_DIR .. "/FFRS_QoL/enabled.txt") then return true end
-    local list = readFile(MODS_DIR .. "/mods.txt") or ""
-    for line in list:gmatch("[^\r\n]+") do
-        local v = line:match("^%s*FFRS_QoL%s*:%s*(%d+)")
-        if v then return v == "1" end
-    end
-    return false
-end
-
-if qolEnabled() then
-    log("FFRS_QoL is installed and enabled; it has the same ability slot settings, so this mod does nothing. "
-        .. "Set AbilitySlots in FFRS_QoL instead, or disable one of the two.")
-    return
+local function writeFile(path, text)
+    local f = io.open(path, "w")
+    if not f then return false end
+    f:write(text); f:close()
+    return true
 end
 
 ------------------------------------------------------------------------
 -- Settings
 ------------------------------------------------------------------------
-local cfg = { Slots = 12, APBonus = 0, FitPanel = true }
-local lastText = nil
+local Defaults = { AbilitySlots = 12, APCapacityBonus = 0, FitEquipmentScreen = true }
+local Range = { AbilitySlots = { 8, 16 }, APCapacityBonus = { 0, 9999 } }
+local cfg = { AbilitySlots = 12, APCapacityBonus = 0, FitEquipmentScreen = true }
+local lastConfigText = nil
 
-local function clampInt(v, lo, hi, def)
-    v = tonumber(v)
-    if not v then return def end
-    v = math.floor(v + 0.5)
-    if v < lo then return lo end
-    if v > hi then return hi end
-    return v
+local function defaultConfigText()
+    return table.concat({
+        "; FFRS Ability Slots - changes are read within a second; slot and AP changes show after loading a save.",
+        "; AbilitySlots: ability slots per character, 8 (the game's own) to 16.",
+        "AbilitySlots=12",
+        "; APCapacityBonus: extra AP limit for every character (0 = unchanged). More slots need more AP.",
+        "APCapacityBonus=0",
+        "; FitEquipmentScreen: 1 = shrink the rows on the equipment screen so every slot fits.",
+        "FitEquipmentScreen=1",
+    }, "\n") .. "\n"
 end
 
 local function loadConfig()
-    local text = readFile(MOD_DIR .. "/config.ini")
-    if not text or text == lastText then return false end
-    lastText = text
-    local raw = {}
-    for line in text:gmatch("[^\r\n]+") do
-        local k, v = line:match("^%s*([%w_]+)%s*=([^;#]*)")
-        if k then raw[k] = v:match("^%s*(.-)%s*$") end
+    local text = readFile(CONFIG_PATH)
+    if not text then
+        text = defaultConfigText()
+        writeFile(CONFIG_PATH, text)
     end
-    cfg.Slots = clampInt(raw.Slots, MIN_SLOTS, MAX_SLOTS, 12)
-    cfg.APBonus = clampInt(raw.APBonus, 0, 9999, 0)
-    local fp = raw.FitPanel and raw.FitPanel:lower()
-    cfg.FitPanel = not (fp == "false" or fp == "0" or fp == "off" or fp == "no")
-    log("settings: Slots=%d APBonus=%d FitPanel=%s", cfg.Slots, cfg.APBonus, tostring(cfg.FitPanel))
+    if text == lastConfigText then return false end
+    lastConfigText = text
+    local new = {}
+    for k, v in pairs(Defaults) do new[k] = v end
+    for line in text:gmatch("[^\r\n]+") do
+        local k, v = line:match("^%s*([%w_]+)%s*=%s*(.-)%s*$")
+        if k and Defaults[k] ~= nil then
+            if Range[k] then
+                local n = tonumber(v)
+                if n then
+                    n = math.floor(n)
+                    if n < Range[k][1] then n = Range[k][1] end
+                    if n > Range[k][2] then n = Range[k][2] end
+                    new[k] = n
+                end
+            else
+                new[k] = (v == "1" or v:lower() == "true")
+            end
+        end
+    end
+    cfg = new
+    log("settings: %d slots, AP limit +%d, fit screen %s", cfg.AbilitySlots, cfg.APCapacityBonus,
+        cfg.FitEquipmentScreen and "on" or "off")
     return true
 end
 
+-- FFRS QoL writes the same table fields, so with both mods active they would keep overwriting
+-- each other. FFRS QoL counts as active when its script is there and UE4SS starts it
+-- (enabled.txt, or "FFRS_QoL : 1" in mods.txt).
+local function qolActive()
+    local mods = DIR:match("^(.*)/[^/]+$") or "ue4ss/Mods"
+    if not readFile(mods .. "/FFRS_QoL/Scripts/main.lua") then return false end
+    if readFile(mods .. "/FFRS_QoL/enabled.txt") then return true end
+    local list = readFile(mods .. "/mods.txt") or ""
+    for line in list:gmatch("[^\r\n]+") do
+        local name, on = line:match("^%s*([%w_]+)%s*:%s*(%d)")
+        if name == "FFRS_QoL" then return on == "1" end
+    end
+    return false
+end
+local QOL = qolActive()
+if QOL then
+    log("FFRS QoL is installed: this mod stays off; use FFRS QoL's \"Ability slots\" setting instead")
+end
+
 ------------------------------------------------------------------------
--- Slots and AP. Every character's base values come from the UNIT_PARAMETER_CALC_DATA table:
--- maxAciontListNum (8) is the number of ability slots and baseSkillEquipCost the ability AP limit.
--- The game copies them into each character when a save is loaded, so a change shows after loading a
--- save. The equipment screen lets you equip into any slot below maxAciontListNum. Lowering it keeps
--- abilities already equipped in the extra slots (the game never drops them); they can be unequipped.
+-- Slots and AP limit (UNIT_PARAMETER_CALC_DATA)
 ------------------------------------------------------------------------
+local stats = { slots = "", apBase = "", panel = "", err = "" }
 local origSlots, origAP = {}, {}
-local applied = ""
 
 local function calcTables()
     local out = {}
@@ -112,38 +141,36 @@ local function calcTables()
     return out
 end
 
-local function applyTables()
-    local rows, slotsNow, apNow = 0, nil, nil
+local function applySlots()
     for _, t in ipairs(calcTables()) do
         t.dt:ForEachRow(function(rowName, row)
             local key = t.path .. "|" .. rowName
             local s = origSlots[key]
             if not s then s = row.maxAciontListNum; origSlots[key] = s end
-            local slots = math.max(s, cfg.Slots)
+            local slots = math.max(s, cfg.AbilitySlots)
             if row.maxAciontListNum ~= slots then row.maxAciontListNum = slots end
+            stats.slots = slots
+
             local a = origAP[key]
             if not a then a = row.baseSkillEquipCost; origAP[key] = a end
-            local ap = a + cfg.APBonus
-            if row.baseSkillEquipCost ~= ap then row.baseSkillEquipCost = ap end
-            rows, slotsNow, apNow = rows + 1, slots, ap
+            local want = a + cfg.APCapacityBonus
+            if row.baseSkillEquipCost ~= want then row.baseSkillEquipCost = want end
+            stats.apBase = want
         end)
-    end
-    local now = string.format("%d row(s), slots %s, AP %s", rows, tostring(slotsNow), tostring(apNow))
-    if rows > 0 and now ~= applied then
-        applied = now
-        log("character table: %s (load a save to see changes)", now)
     end
 end
 
 ------------------------------------------------------------------------
--- Equipment screen fit. The right-hand panel lists the equipment rows, the Vision and the ability
--- rows, each 40 units high plus 8 units of spacing, with room for about 12 rows. With more rows,
--- every equipment and ability row gets the same smaller height; if even the smallest rows don't fit,
--- the Vision row (64 units) shrinks to 20 too. Only heights that differ are written.
+-- Equipment screen fit. Every equipment row and ability row has a SizeBox 40 units high plus 8
+-- units of spacing, and the panel has room for about 612 units. With more rows than that, all
+-- rows get the same smaller height. If even the smallest rows don't fit (16 slots with 6 accessory
+-- rows from 4-accessory mods), the Vision row (64 units, SizeBox_0 of WBP_UnitEquippedVision)
+-- shrinks to 20 as well. The game reuses these widgets, so this re-checks while the screen is open
+-- and only writes heights that differ.
 ------------------------------------------------------------------------
 local FIT_ROOM, FIT_GAP, FIT_MIN, FIT_MAX = 612, 8, 22, 40
 local VISION_H, VISION_MIN = 64, 20
-local Fit = { lists = {}, nextScan = 0, last = "" }
+local Fit = { lists = {}, nextScan = 0 }
 
 local function widgetClass(w)
     local ok, n = pcall(function() return w:GetClass():GetFName():ToString() end)
@@ -180,7 +207,7 @@ local function visibleOnly(t)
 end
 
 local function fitEquipmentPanel(list)
-    local box = list:GetParent()                       -- VerticalBox_List: item list, Vision, abilities
+    local box = list:GetParent()                       -- equipment list, Vision, abilities
     if not (box and box:IsValid()) then return end
     local items, skills = {}, {}
     collectWidgets(box:GetChildAt(0), "WBP_UnitEquippedItemEntry_C", items, {}, 0)
@@ -203,21 +230,13 @@ local function fitEquipmentPanel(list)
             if sb and math.abs((sb.HeightOverride or 0) - h) > 0.01 then sb:SetHeightOverride(h) end
         end
     end
-    local now = string.format("%d+%d rows, height %d, vision %d", #items, #skills, h, vh)
-    if now ~= Fit.last then Fit.last = now; log("equipment panel: %s", now) end
+    local panel = string.format("%d+%d rows, height %d, vision %d", #items, #skills, h, vh)
+    if panel ~= stats.panel then log("equipment panel: %s", panel) end
+    stats.panel = panel
 end
 
-------------------------------------------------------------------------
--- Loops
-------------------------------------------------------------------------
-loadConfig()
-gameLoop(3000, function()
-    loadConfig()
-    applyTables()
-end)
-
-gameLoop(400, function()
-    if not cfg.FitPanel then return end
+local function fitTick()
+    if not cfg.FitEquipmentScreen then return end
     local now = os.clock()
     local open = nil
     for _, w in ipairs(Fit.lists) do
@@ -234,6 +253,36 @@ gameLoop(400, function()
         end
     end
     if open then fitEquipmentPanel(open) end
-end)
+end
 
-log("loaded (slots %d-%d, settings in %s/config.ini)", MIN_SLOTS, MAX_SLOTS, MOD_DIR)
+------------------------------------------------------------------------
+-- Main loop
+------------------------------------------------------------------------
+local function writeStatus()
+    writeFile(STATUS_PATH, table.concat({
+        "Active=" .. (QOL and "0 (FFRS QoL installed)" or "1"),
+        "AbilitySlots=" .. tostring(stats.slots),
+        "APLimit=" .. tostring(stats.apBase),
+        "Panel=" .. tostring(stats.panel),
+        "LastError=" .. tostring(stats.err),
+    }, "\n") .. "\n")
+end
+
+if not QOL then
+    loadConfig()
+    local tick = 0
+    gameLoop(1000, function()
+        tick = tick + 1
+        local changed = loadConfig()
+        if changed or tick % 3 == 0 then
+            local ok, err = pcall(applySlots)
+            stats.err = ok and "" or tostring(err)
+            if not ok then log("apply error: %s", stats.err) end
+        end
+        writeStatus()
+    end)
+    gameLoop(400, fitTick)
+    log("loaded (%d slots)", cfg.AbilitySlots)
+else
+    writeStatus()
+end

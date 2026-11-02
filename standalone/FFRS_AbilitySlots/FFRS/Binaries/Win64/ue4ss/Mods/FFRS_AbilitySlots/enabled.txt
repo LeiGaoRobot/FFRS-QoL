@@ -1,0 +1,1 @@
+This file tells UE4SS to load FFRS_AbilitySlots (no need to edit mods.txt).

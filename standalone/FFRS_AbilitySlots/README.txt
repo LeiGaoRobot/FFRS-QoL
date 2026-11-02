@@ -1,35 +1,50 @@
-FFRS Ability Slots
-==================
+FFRS Ability Slots 1.0.0 - FINAL FANTASY RESONANCE
+====================================================
 
-More ability slots for FINAL FANTASY RESONANCE (Steam PC): 8 to 16 per character, an optional
-bonus to the ability AP limit, and an equipment screen that shrinks its rows so every slot fits.
-This is the ability-slot part of FFRS QoL as a mod of its own.
+More ability slots for every character: 8 (the game's own) up to 16, 12 by default.
+The equipment screen makes its rows shorter so every slot fits on the panel.
+Abilities in the extra slots work on the map and in battle like the others.
+
+This is the ability slot part of FFRS QoL on its own, for people who only want the slots.
+If you use FFRS QoL, you don't need this: FFRS QoL has the same setting, and this mod turns
+itself off when FFRS QoL is installed.
+
+Requirements
+------------
+UE4SS, experimental build (the official 3.0.1 release is too old for this game):
+https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest
+Download UE4SS_v3.0.1-....zip (not the zDEV one) and extract it into FFRS\Binaries\Win64,
+so that dwmapi.dll and the ue4ss folder sit next to FFRS-Win64-Shipping.exe.
+Use engine version 5.6 in ue4ss\UE4SS-settings.ini ([EngineVersionOverride] MajorVersion = 5,
+MinorVersion = 6) if UE4SS doesn't detect it. FFRS QoL and most FFRS UE4SS mods ship this file.
 
 Install
-1. Install UE4SS first (UE4SS_v3.0.1 experimental build, extracted into FFRS\Binaries\Win64).
-2. Drag the FFRS folder from this zip into the game folder (Steam > right-click the game >
-   Manage > Browse local files) and merge.
-3. Start the game and load a save.
+-------
+Drag the FFRS folder from this archive into the game folder (the one with FFRS.exe).
+The mod starts by itself (enabled.txt), no need to edit mods.txt.
 
-Settings: FFRS\Binaries\Win64\ue4ss\Mods\FFRS_AbilitySlots\config.ini
-  Slots     ability slots per character, 8 to 16 (default 12)
-  APBonus   extra ability AP for every character (default 0)
-  FitPanel  shrink the equipment screen rows so all slots fit (default true)
-Changes are read within 3 seconds; load a save to see new slots and AP.
-More slots need more AP, so raise APBonus as well if abilities don't fit.
+Settings
+--------
+FFRS\Binaries\Win64\ue4ss\Mods\FFRS_AbilitySlots\config.ini (open with Notepad):
 
-Notes
-- If FFRS QoL is installed and enabled, this mod does nothing: FFRS QoL has the same settings
-  (Ability slots, Ability AP limit +). You only need one of the two.
-- Lowering Slots keeps abilities already equipped in the extra slots until you unequip them.
-- Steam Deck / Linux: set the launch option WINEDLLOVERRIDES="dwmapi=n,b" %command% so UE4SS loads.
-- Uninstall: delete the FFRS_AbilitySlots folder. Saves are not touched otherwise; abilities in
-  extra slots stay in a save made with them, so unequip them first to get back to exactly 8.
+  AbilitySlots=12        slots per character, 8 to 16
+  APCapacityBonus=0      extra AP limit for every character; more slots need more AP
+  FitEquipmentScreen=1   1 = shrink the equipment screen rows so every slot fits
 
-https://github.com/LeiGaoRobot/FFRS-QoL
+Changes are read within a second. Slot count and AP limit apply when a save is loaded,
+so load your save again after changing them. With MogHub (Nexus mod 110) installed, the
+same settings are in the game's Mods menu.
 
-----------------------------------------------------------------------
-中文：能力栏扩展独立版。每人 8–16 格能力栏、可选能力 AP 上限加成，装备画面自动缩小行高放得下。
-需要先装 UE4SS，把压缩包里的 FFRS 文件夹拖进游戏目录合并即可。
-设置在 Mods\FFRS_AbilitySlots\config.ini（Slots 格数、APBonus AP 加成、FitPanel 自适应），改完读档生效。
-已启用 FFRS QoL 时本 mod 不起作用（FFRS QoL 里有相同设置），两者装一个即可。
+Good to know
+------------
+- At 16 slots with 4-accessory mods (6 equipment rows) the rows get small and the Vision row
+  gets shorter too, so everything stays on the panel.
+- Steam Deck / Linux (Proton): set the game's launch option to
+  WINEDLLOVERRIDES="dwmapi=n,b" %command%  so UE4SS loads.
+- Lowering the slot count keeps abilities that are already in the extra slots; you can still
+  unequip them.
+- Uninstall: unequip the abilities in slots 9 and up (or keep them, the game keeps them in the
+  save) and delete the FFRS_AbilitySlots folder.
+- Single-player only. Back up your saves before trying mods.
+
+Source: https://github.com/LeiGaoRobot/FFRS-QoL (MIT license). Part of FFRS QoL.
