@@ -97,7 +97,7 @@ local function clampMult(x, fallback)
 end
 
 -- Whole-number settings with their own range (not multipliers).
-local IntRange = { ItemLimit = { 99, 9999 }, APCapacityBonus = { 0, 9999 }, AbilitySlots = { 8, 12 } }
+local IntRange = { ItemLimit = { 99, 9999 }, APCapacityBonus = { 0, 9999 }, AbilitySlots = { 8, 16 } }
 local function clampInt(k, x)
     x = tonumber(x)
     if not x then return Defaults[k] end
@@ -647,8 +647,21 @@ local itemLimitApplied = 99  -- the game starts with its original code
 -- ItemLimit.ps1 is an optional download (antivirus heuristics flag its memory patching),
 -- so the feature stays off when the file isn't there.
 local ITEMLIMIT_PS1 = DIR .. "/ItemLimit.ps1"
-local itemLimitMissingLogged = false
+-- Steam Deck / Linux: the game runs under Proton (Wine), where powershell.exe is only a stub, so
+-- the PowerShell helpers (settings window, ItemLimit.ps1) are skipped there.
+local Helper = { missingLogged = false, wine = (function()
+    for _, v in ipairs({ "WINEPREFIX", "STEAM_COMPAT_DATA_PATH", "WINELOADERNOEXEC" }) do
+        if os.getenv(v) then return true end
+    end
+    for _, p in ipairs({ "C:\\windows\\system32\\winecfg.exe", "Z:\\etc\\os-release" }) do
+        local f = io.open(p, "rb")
+        if f then f:close(); return true end
+    end
+    return false
+end)() }
+if Helper.wine then log("running under Wine/Proton: settings window and item limit are not available; use config.ini or MogHub") end
 local function itemLimitInstalled()
+    if Helper.wine then return false end
     local f = io.open(ITEMLIMIT_PS1, "r")
     if f then f:close(); return true end
     return false
@@ -657,9 +670,9 @@ end
 local function applyItemLimit()
     if cfg.ItemLimit == itemLimitApplied then return end
     if not itemLimitInstalled() then
-        if not itemLimitMissingLogged then
-            log("item limit %d: ItemLimit.ps1 not installed (optional file), keeping 99", cfg.ItemLimit)
-            itemLimitMissingLogged = true
+        if not Helper.missingLogged then
+            log("item limit %d: ItemLimit.ps1 not %s, keeping 99", cfg.ItemLimit, Helper.wine and "available under Wine/Proton" or "installed (optional file)")
+            Helper.missingLogged = true
         end
         return
     end
@@ -1914,11 +1927,14 @@ end)
 -- rows, each 40 units high (a SizeBox in every entry) plus 8 units of spacing. The panel has room for
 -- about 12 such rows (4 equipment + 8 abilities), so extra ability slots (or extra accessory slots
 -- from other mods) run off the bottom. When there are more rows than fit, every equipment and
--- ability row gets the same smaller height. The game reuses these widgets, so this re-checks while
--- the screen is open and only writes heights that differ.
+-- ability row gets the same smaller height. If even the smallest rows don't fit (16 slots with 6
+-- accessory rows), the Vision row (64 units, SizeBox_0 of WBP_UnitEquippedVision) shrinks too,
+-- which frees about 44 units. The game reuses these widgets, so this re-checks while the screen is
+-- open and only writes heights that differ.
 ------------------------------------------------------------------------
 do
 local FIT_ROOM, FIT_GAP, FIT_MIN, FIT_MAX = 612, 8, 22, 40   -- units, measured on the 1.0.1 layout
+local VISION_H, VISION_MIN = 64, 20
 local Fit = { lists = {}, nextScan = 0 }
 local function widgetClass(w)
     local ok, n = pcall(function() return w:GetClass():GetFName():ToString() end)
@@ -1963,17 +1979,23 @@ local function fitEquipmentPanel(list)
     items, skills = visibleOnly(items), visibleOnly(skills)
     local rows = #items + #skills
     if rows == 0 then return end
-    local h = math.floor(FIT_ROOM / rows) - FIT_GAP
+    local room, vh = FIT_ROOM, VISION_H
+    if rows * (FIT_MIN + FIT_GAP) > FIT_ROOM then room, vh = FIT_ROOM + VISION_H - VISION_MIN, VISION_MIN end
+    local h = math.floor(room / rows) - FIT_GAP
     if h > FIT_MAX then h = FIT_MAX end
     if h < FIT_MIN then h = FIT_MIN end
     local changed = 0
+    local vsb = firstSizeBox(box:GetChildAt(1))
+    if vsb and vsb:GetFName():ToString() == "SizeBox_0" and math.abs((vsb.HeightOverride or 0) - vh) > 0.01 then
+        vsb:SetHeightOverride(vh); changed = changed + 1
+    end
     for _, group in ipairs({ items, skills }) do
         for _, w in ipairs(group) do
             local sb = firstSizeBox(w)
             if sb and math.abs((sb.HeightOverride or 0) - h) > 0.01 then sb:SetHeightOverride(h); changed = changed + 1 end
         end
     end
-    stats.panelFit = string.format("%d+%d rows, height %d", #items, #skills, h)
+    stats.panelFit = string.format("%d+%d rows, height %d, vision %d", #items, #skills, h, vh)
     if changed > 0 and devEnabled() then log("equipment panel: %s (%d widgets resized)", stats.panelFit, changed) end
 end
 gameLoop(400, function()
@@ -2263,7 +2285,9 @@ local function settingsWindowInstalled()
     if f then f:close(); return true end
     return false
 end
-if cfg.AutoOpenSettings and not settingsWindowInstalled() then
+if cfg.AutoOpenSettings and Helper.wine then
+    log("settings window skipped under Wine/Proton; edit config.ini or use MogHub")
+elseif cfg.AutoOpenSettings and not settingsWindowInstalled() then
     log("settings window not installed (Settings.ps1 missing); edit config.ini or use MogHub")
 elseif cfg.AutoOpenSettings then
     local ps1 = (DIR .. "/Settings.ps1"):gsub("/", "\\")

@@ -73,7 +73,7 @@ if HAS_ITEM_LIMIT then
 end
 items[#items + 1] = { key = "APCapacityBonus", label = "Ability AP limit +", type = "number", min = 0, max = 9999,
     step = 50, default = 0, format = "+%d", help = "Raises every character's AP limit for equipped abilities. Load a save to see it." }
-items[#items + 1] = { key = "AbilitySlots", label = "Ability slots", type = "number", min = 8, max = 12, step = 1,
+items[#items + 1] = { key = "AbilitySlots", label = "Ability slots", type = "number", min = 8, max = 16, step = 1,
     default = 8, help = "Ability slots per character (the game has 8). Load a save to see it. More slots need more AP. Lowering it keeps abilities already in the extra slots." }
 
 if HAS_WINDOW then

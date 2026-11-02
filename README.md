@@ -36,7 +36,7 @@ It comes with a settings window, and changes apply in game within about a second
 **Items and abilities**
 - Add items: search any consumable, material or equipment in the settings window and add it to your inventory (key items are left out)
 - Ability AP limit bonus for every character (applies after loading a save)
-- More ability slots: 8 to 12 per character (applies after loading a save). The equipment screen shrinks its rows so every slot fits on the panel, which also fixes the bottom row other mods' extra accessory slots push out of view. More slots need more AP, so raise the AP limit too. Lowering the setting keeps abilities already in the extra slots until you unequip them
+- More ability slots: 8 to 16 per character (applies after loading a save). The equipment screen shrinks its rows so every slot fits on the panel, which also fixes the bottom row other mods' extra accessory slots push out of view. More slots need more AP, so raise the AP limit too. Lowering the setting keeps abilities already in the extra slots until you unequip them
 - Item carry limit up to 9999 (`ItemLimit.ps1`, see [Antivirus note](#antivirus-note)); shops let you buy past 99 too
 
 Defaults: encounters on, EXP 2x, Gil 2x, everything else vanilla.
@@ -50,6 +50,7 @@ Get the zips from [Releases](https://github.com/LeiGaoRobot/FFRS-QoL/releases):
 | `FFRS_QoL_v*_all-in-one_ZH.zip` | Mod + UE4SS + item limit, ready to use. Readme in Chinese; the settings window is English or Chinese. |
 | `FFRS_QoL_v*_mod-only_EN.zip` | Mod only, English readme. Install UE4SS yourself first. |
 | `FFRS_QoL_v*_ItemLimit-addon.zip` | Adds the item carry limit to the mod-only package. |
+| `FFRS_AbilitySlots_v*.zip` | Only the extra ability slots, as a mod of its own (see [Ability slots only](#ability-slots-only)). Install UE4SS yourself first. |
 
 ## Install
 
@@ -89,6 +90,31 @@ Delete `FFRS\Binaries\Win64\ue4ss\Mods\FFRS_QoL` and the `FFRS\Content\Paks\~mod
 To remove UE4SS too, delete `FFRS\Binaries\Win64\dwmapi.dll` and the `ue4ss` folder.
 Saves are not touched. If you raised the AP limit, set it back to 0 and load your save once first. Extra ability slots stay in a save that was saved with them; unequip the abilities in them first if you want the game back to exactly 8.
 
+### Steam Deck / Linux (Proton)
+
+The mod itself runs under Proton, but UE4SS has to be told to load:
+
+1. Install as above (copy the `FFRS` folder into the game folder and merge). Linux file names are case-sensitive,
+   so keep the folder names exactly as in the zip.
+2. In Steam, open the game's Properties > General > Launch Options and enter
+   `WINEDLLOVERRIDES="dwmapi=n,b" %command%`. UE4SS loads through `dwmapi.dll`, and without this Proton uses its own copy.
+   If you already have an override for another mod, list both, for example `WINEDLLOVERRIDES="dwmapi,winmm=n,b" %command%`.
+3. Use Steam's default Proton, Proton Experimental or Proton 10. GE-Proton 10-13 to 10-15 were reported to stop UE4SS from loading; 10-16 works again.
+
+To check that it works, look for `FFRS/Binaries/Win64/ue4ss/UE4SS.log` after starting the game: it should contain
+`[FFRS_QoL] loaded`. No log file means UE4SS didn't load; check the launch option.
+
+The settings window and the item carry limit need Windows PowerShell, so they don't work under Proton and the mod skips them there.
+Change settings by editing `FFRS_QoL/config.ini` (saved changes apply within a second) or in game with MogHub.
+
+## Ability slots only
+
+`FFRS_AbilitySlots_v*.zip` has only the extra ability slots, for players who want those without the rest of FFRS QoL.
+It is its own UE4SS mod, `Mods/FFRS_AbilitySlots`, with the same slot code: 8 to 16 slots per character, an optional AP bonus
+and the equipment-screen fit. Settings are in its `config.ini` (`Slots`, `APBonus`, `FitPanel`), read again every 3 seconds;
+load a save to see new slots. Install UE4SS first, then drag the zip's `FFRS` folder into the game folder.
+If FFRS QoL is also installed and enabled, FFRS_AbilitySlots does nothing (FFRS QoL has the same settings), so you don't need both.
+
 ## Antivirus note
 
 `ItemLimit.ps1` raises the 99 item cap. The game hardcodes 99 in its code, so the script opens
@@ -118,6 +144,11 @@ mod/FFRS/Binaries/Win64/ue4ss/
     lang/*.ini                Chinese texts for that page
     config.ini                default settings
     enabled.txt               makes UE4SS load the mod
+standalone/FFRS_AbilitySlots/
+  README.txt                  readme of the ability-slots-only zip
+  FFRS/Binaries/Win64/ue4ss/Mods/FFRS_AbilitySlots/
+    Scripts/main.lua          ability slots, AP bonus, equipment-screen fit
+    config.ini, enabled.txt
 ```
 
 ## Credits
@@ -139,7 +170,7 @@ FINAL FANTASY RESONANCE（Steam PC 版）便利功能 MOD，基于 UE4SS，带�
 
 **功能**：开关随机遇敌 / 遇敌频率（0.1–5 倍）、宝箱和道具地图标记、经验 / 金钱 / MR / AP 倍率、掉落率倍率和稀有物品必掉、
 战斗加速、逃跑必定成功、重复上次指令 / 自动重复（简易自动战斗，支持 W 臂腕，混乱时交给玩家，攻击只打敌人）、辅助技能智能选目标、
-LB 充能倍率 / LB 槽跨战斗保留、Libra 扫描全体敌人（默认开）/ 自动 Libra（默认关，会记入存档）、添加物品、能力 AP 上限加成、能力栏扩展（每人 8–12 格，装备画面会自动缩小行高放得下）、物品持有上限最高 9999（商店也能买超过 99）。
+LB 充能倍率 / LB 槽跨战斗保留、Libra 扫描全体敌人（默认开）/ 自动 Libra（默认关，会记入存档）、添加物品、能力 AP 上限加成、能力栏扩展（每人 8–16 格，装备画面会自动缩小行高放得下）、物品持有上限最高 9999（商店也能买超过 99）。
 
 地图标记基于 ZArkadia 的 [Item and Chest Markers](https://www.nexusmods.com/finalfantasyresonance/mods/25)，经其许可规定署名使用。
 
@@ -150,6 +181,14 @@ LB 充能倍率 / LB 槽跨战斗保留、Libra 扫描全体敌人（默认开�
 **游戏内设置（可选）**：装了 [MogHub](https://www.nexusmods.com/finalfantasyresonance/mods/110) 的话，标题画面或主菜单 → Mods → FFRS QoL
 里也能改设置，支持手柄。它和设置窗口改的是同一个 `config.ini`，两边改动都会立即生效、互相同步；不用另外安装。
 快捷键绑定、倍率循环档位和添加物品仍在设置窗口里（菜单里可以一键打开）。
+
+**Steam Deck / Linux（Proton）**：Steam 里游戏属性 → 通用 → 启动选项填 `WINEDLLOVERRIDES="dwmapi=n,b" %command%`
+（已有别的覆盖就合并写，例如 `dwmapi,winmm=n,b`）；用 Steam 默认 Proton / Experimental / Proton 10，GE-Proton 10-13 到 10-15 据报会让 UE4SS 不加载。
+启动后 `FFRS/Binaries/Win64/ue4ss/UE4SS.log` 里有 `[FFRS_QoL] loaded` 就说明成功。设置窗口和物品上限需要 Windows PowerShell，Proton 下不可用，
+请直接改 `FFRS_QoL/config.ini` 或用 MogHub。
+
+**只要能力栏**：`FFRS_AbilitySlots_v*.zip` 只包含能力栏扩展（8–16 格、可选 AP 加成、装备画面自适应），是独立的 UE4SS mod，
+设置在它的 `config.ini`（`Slots`、`APBonus`、`FitPanel`）。已启用 FFRS QoL 时它不做任何事，两者装一个即可。
 
 **杀毒软件提示**：`ItemLimit.ps1`（物品上限）只修改运行中游戏内存里的 99 上限，不改动硬盘上的游戏文件，
 但部分杀毒软件会误报。不想用可以删掉它，其他功能照常。

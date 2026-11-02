@@ -325,10 +325,10 @@ $grpItem.Controls.Add($nuAP)
 $tips.SetToolTip($nuAP, (T '提高所有角色装备能力的 AP 上限，读档后生效' 'Raises every character''s ability AP limit; shows after loading a save'))
 $grpItem.Controls.Add((New-Label (T '能力栏' 'Slots') 202 60 70 26))
 $nuSlots = New-Object System.Windows.Forms.NumericUpDown
-$nuSlots.Minimum = 8; $nuSlots.Maximum = 12; $nuSlots.Increment = 1
+$nuSlots.Minimum = 8; $nuSlots.Maximum = 16; $nuSlots.Increment = 1
 $nuSlots.Location = New-Object System.Drawing.Point(272, 62); $nuSlots.Size = New-Object System.Drawing.Size(48, 26)
 $grpItem.Controls.Add($nuSlots)
-$tips.SetToolTip($nuSlots, (T "每个角色的能力栏格数（原版 8，最多 12），读档后生效。`n格子多了需要更多 AP，可以配合左边的 AP 上限加成。`n调低时，已经装在多出格子里的能力会保留，可以手动卸除。" "Ability slots per character (the game has 8, up to 12); shows after loading a save.`nMore slots need more AP: raise the AP limit on the left.`nLowering it keeps abilities already in the extra slots; unequip them by hand."))
+$tips.SetToolTip($nuSlots, (T "每个角色的能力栏格数（原版 8，最多 16），读档后生效。`n格子多了需要更多 AP，可以配合左边的 AP 上限加成。`n调低时，已经装在多出格子里的能力会保留，可以手动卸除。" "Ability slots per character (the game has 8, up to 16); shows after loading a save.`nMore slots need more AP: raise the AP limit on the left.`nLowering it keeps abilities already in the extra slots; unequip them by hand."))
 $apHint = New-Label (T '读档后生效' 'after reload') 324 60 114 26
 $apHint.ForeColor = $grey
 $grpItem.Controls.Add($apHint)
@@ -508,7 +508,7 @@ function Show-Config($cfg) {
     $ap = 0; [void][int]::TryParse([string]$cfg.APCapacityBonus, [ref]$ap)
     $nuAP.Value = [Math]::Min(9999, [Math]::Max(0, $ap))
     $slots = 8; [void][int]::TryParse([string]$cfg.AbilitySlots, [ref]$slots)
-    $nuSlots.Value = [Math]::Min(12, [Math]::Max(8, $slots))
+    $nuSlots.Value = [Math]::Min(16, [Math]::Max(8, $slots))
     $k3 = $cfg.RepeatCommandKey; if ($KeyChoices -notcontains $k3) { $k3 = 'F9' }
     $k4 = $cfg.AutoRepeatKey; if ($KeyChoices -notcontains $k4) { $k4 = 'F8' }
     $cbRepeat.SelectedItem = $k3; $cbAutoRep.SelectedItem = $k4
