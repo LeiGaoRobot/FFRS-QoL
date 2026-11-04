@@ -63,6 +63,8 @@ $Defaults = [ordered]@{
     PersistentLB       = '0'
     AutoRepeat         = '0'
     SmartSupport       = '1'
+    SmartAuto          = '0'
+    AutoHealBelow      = '40'
     LibraScanAll       = '1'
     AutoLibra          = '0'
     AutoOpenSettings   = '1'
@@ -296,6 +298,20 @@ $grpRep.Controls.Add($chkSmart)
 $smartHint = New-Label (T '回复给 HP 最低的队友，增益给还没有的队友' 'Heals the lowest-HP ally; buffs allies that lack it') 32 108 430 22
 $smartHint.ForeColor = $grey
 $grpRep.Controls.Add($smartHint)
+$chkSmartAuto = New-Object System.Windows.Forms.CheckBox
+$chkSmartAuto.Text = T '智能模式（打弱点）' 'Smart mode (weakness)'
+$chkSmartAuto.Location = New-Object System.Drawing.Point(14, 136); $chkSmartAuto.Size = New-Object System.Drawing.Size(234, 26)
+$grpRep.Controls.Add($chkSmartAuto)
+$tips.SetToolTip($chkSmartAuto, (T "自动重复时，按敌人的真实抗性选技能（没扫描过的敌人也一样）：`n有队友 HP 低于下面的百分比就先回复；能打弱点就用最强的弱点技能（W臂腕回合两次都用它）；`n否则沿用上次的指令，但不用会被减半、无效、吸收或反射的属性，必要时改为普通攻击。`nMP 不够时改用上次的单个技能或普通攻击；沉默时不用魔法，不对反射状态的目标放魔法。不用极限技和召唤。" "With auto repeat, picks skills from the enemies' real resistances (scanned or not):`nheals first when an ally is below the HP % on the right; otherwise the strongest skill that hits a weakness (both attacks of a W臂腕 turn);`notherwise the last command, but never an element a target halves, nullifies, absorbs or reflects (a basic attack instead).`nOut of MP: the last single ability or a basic attack. No spells while silenced or at targets with Reflect. Never uses Limit Bursts or summons."))
+$grpRep.Controls.Add((New-Label (T 'HP 低于' 'Heal below') 250 136 102 26))
+$nuHeal = New-Object System.Windows.Forms.NumericUpDown
+$nuHeal.Minimum = 0; $nuHeal.Maximum = 95; $nuHeal.Increment = 5
+$nuHeal.Location = New-Object System.Drawing.Point(354, 138); $nuHeal.Size = New-Object System.Drawing.Size(56, 26)
+$grpRep.Controls.Add($nuHeal)
+$healHint = New-Label (T '% 时回复' '% HP') 414 136 100 26
+$healHint.ForeColor = $grey
+$grpRep.Controls.Add($healHint)
+$tips.SetToolTip($nuHeal, (T '智能模式下，队友 HP 低于这个百分比时，会回复的角色先回复；0 = 不回复' 'In Smart mode, a character with a heal uses it first when an ally is below this HP %; 0 = never'))
 
 # Items (right column, bottom)
 $grpItem = New-Object System.Windows.Forms.GroupBox
@@ -501,6 +517,9 @@ function Show-Config($cfg) {
     $chkEscape.Checked = ($cfg.AlwaysEscape -eq '1' -or $cfg.AlwaysEscape -eq 'true')
     $chkRepeat.Checked = ($cfg.AutoRepeat -eq '1' -or $cfg.AutoRepeat -eq 'true')
     $chkSmart.Checked = ($cfg.SmartSupport -eq '1' -or $cfg.SmartSupport -eq 'true')
+    $chkSmartAuto.Checked = ($cfg.SmartAuto -eq '1' -or $cfg.SmartAuto -eq 'true')
+    $hb = 40; [void][int]::TryParse([string]$cfg.AutoHealBelow, [ref]$hb)
+    $nuHeal.Value = [Math]::Min(95, [Math]::Max(0, $hb))
     $chkLibraAll.Checked = ($cfg.LibraScanAll -eq '1' -or $cfg.LibraScanAll -eq 'true')
     $chkAutoLibra.Checked = ($cfg.AutoLibra -eq '1' -or $cfg.AutoLibra -eq 'true')
     $il = 99; [void][int]::TryParse([string]$cfg.ItemLimit, [ref]$il)
@@ -541,6 +560,8 @@ function Collect-Config {
     $cfg.AlwaysEscape       = if ($chkEscape.Checked) { '1' } else { '0' }
     $cfg.AutoRepeat         = if ($chkRepeat.Checked) { '1' } else { '0' }
     $cfg.SmartSupport       = if ($chkSmart.Checked) { '1' } else { '0' }
+    $cfg.SmartAuto          = if ($chkSmartAuto.Checked) { '1' } else { '0' }
+    $cfg.AutoHealBelow      = ([int]$nuHeal.Value).ToString()
     $cfg.LibraScanAll       = if ($chkLibraAll.Checked) { '1' } else { '0' }
     $cfg.AutoLibra          = if ($chkAutoLibra.Checked) { '1' } else { '0' }
     $cfg.ItemLimit          = ([int]$nuItem.Value).ToString()
@@ -599,6 +620,8 @@ $chkAuto.Add_CheckedChanged({ Request-Save })
 $chkEscape.Add_CheckedChanged({ Request-Save })
 $chkRepeat.Add_CheckedChanged({ Request-Save })
 $chkSmart.Add_CheckedChanged({ Request-Save })
+$chkSmartAuto.Add_CheckedChanged({ Request-Save })
+$nuHeal.Add_ValueChanged({ Request-Save })
 $chkLibraAll.Add_CheckedChanged({ Request-Save })
 $chkAutoLibra.Add_CheckedChanged({ Request-Save })
 $cbRepeat.Add_SelectedIndexChanged({ Request-Save })

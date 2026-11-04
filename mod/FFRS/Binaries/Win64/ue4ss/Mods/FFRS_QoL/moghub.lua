@@ -63,6 +63,10 @@ local items = {
       help = "A simple auto battle: each character reuses their last command. Characters without one are chosen by hand. Hotkey: F8." },
     { key = "SmartSupport", label = "Smart targets for support skills", type = "toggle", default = true,
       help = "When repeating, heals go to the ally with the lowest HP and buffs to allies that don't have them yet." },
+    { key = "SmartAuto", label = "Smart mode (weaknesses)", type = "toggle", default = false,
+      help = "Auto repeat picks skills from the enemies' real resistances, scanned or not: heals an ally below the threshold first, otherwise the strongest skill that hits a weakness (both attacks of a W-Arm turn), otherwise the last command, never with an element a target halves, nullifies, absorbs or reflects (a basic attack instead). Never uses Limit Bursts or summons." },
+    { key = "AutoHealBelow", label = "Smart mode: heal below HP %", type = "number", min = 0, max = 95, step = 5, default = 40,
+      help ="In Smart mode, a character with a heal uses it first when an ally's HP is below this. 0 = never." },
 
     { header = "Items and abilities" },
 }

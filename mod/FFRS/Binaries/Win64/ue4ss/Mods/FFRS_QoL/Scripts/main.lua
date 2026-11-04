@@ -64,6 +64,8 @@ local Defaults = {
     PersistentLB       = false,
     AutoRepeat         = false,
     SmartSupport       = true,
+    SmartAuto          = false,  -- auto repeat picks skills by the enemies' weaknesses
+    AutoHealBelow      = 40,     -- Smart mode heals an ally below this HP %; 0 = never
     LibraScanAll       = true,
     AutoLibra          = false,
     AutoOpenSettings   = true,
@@ -80,7 +82,7 @@ local Defaults = {
 }
 local Order = { "EncountersEnabled", "EncounterRate", "ExpMultiplier", "MoneyMultiplier", "MRPointMultiplier", "DropMultiplier",
                 "RareAlwaysDrop", "APMultiplier", "BattleSpeedMultiplier", "AlwaysEscape", "ItemLimit", "APCapacityBonus", "AbilitySlots", "MapMarkers", "LBGainMultiplier", "PersistentLB", "AutoRepeat", "SmartSupport",
-                "LibraScanAll", "AutoLibra", "AutoOpenSettings", "UILanguage", "ToggleEncounterKey", "CycleMultiplierKey", "AutoRepeatKey", "RepeatCommandKey",
+                "SmartAuto", "AutoHealBelow", "LibraScanAll", "AutoLibra", "AutoOpenSettings", "UILanguage", "ToggleEncounterKey", "CycleMultiplierKey", "AutoRepeatKey", "RepeatCommandKey",
                 "ToggleEncounterPad", "CycleMultiplierPad", "RepeatCommandPad", "AutoRepeatPad",
                 "CyclePresets" }
 
@@ -97,7 +99,7 @@ local function clampMult(x, fallback)
 end
 
 -- Whole-number settings with their own range (not multipliers).
-local IntRange = { ItemLimit = { 99, 9999 }, APCapacityBonus = { 0, 9999 }, AbilitySlots = { 8, 16 } }
+local IntRange = { ItemLimit = { 99, 9999 }, APCapacityBonus = { 0, 9999 }, AbilitySlots = { 8, 16 }, AutoHealBelow = { 0, 95 } }
 local function clampInt(k, x)
     x = tonumber(x)
     if not x then return Defaults[k] end
@@ -758,6 +760,7 @@ local function writeStatus()
         "SpeedList=" .. stats.speedList,
         "AlwaysEscape=" .. (cfg.AlwaysEscape and "1" or "0"),
         "AutoRepeat=" .. (cfg.AutoRepeat and "1" or "0"),
+        "SmartAuto=" .. (cfg.SmartAuto and "1" or "0"),
         "RepeatRecords=" .. stats.repeatRecords,
         "RepeatLast=" .. stats.repeatLast,
         "GroupRows=" .. stats.groupRows,
@@ -984,7 +987,11 @@ local function updateBadge()
         local want = cfg.AutoRepeat and Hud.inBattle
         if want then
             local keys = keyLabel("AutoRepeatKey", "AutoRepeatPad")
-            hudShow("badge", tr("● 自动重复：开（" .. keys .. " 关闭）", "● Auto repeat ON (" .. keys .. " to stop)"), GREEN)
+            if cfg.SmartAuto then
+                hudShow("badge", tr("● 智能自动战斗：开（" .. keys .. " 关闭）", "● Smart auto battle ON (" .. keys .. " to stop)"), GREEN)
+            else
+                hudShow("badge", tr("● 自动重复：开（" .. keys .. " 关闭）", "● Auto repeat ON (" .. keys .. " to stop)"), GREEN)
+            end
         elseif Hud.badgeShown then
             local h = Hud.badge
             if h and h.W:IsValid() then h.W:SetVisibility(1) end
@@ -999,7 +1006,9 @@ local function noteAutoRepeat()
     if Hud.lastAuto == nil then Hud.lastAuto = cfg.AutoRepeat; return end
     if cfg.AutoRepeat == Hud.lastAuto then return end
     Hud.lastAuto = cfg.AutoRepeat
-    if cfg.AutoRepeat then toast(tr("自动重复：开", "Auto repeat: ON"), GREEN) else toast(tr("自动重复：关", "Auto repeat: OFF"), GREY) end
+    if cfg.AutoRepeat and cfg.SmartAuto then toast(tr("智能自动战斗：开", "Smart auto battle: ON"), GREEN)
+    elseif cfg.AutoRepeat then toast(tr("自动重复：开", "Auto repeat: ON"), GREEN)
+    else toast(tr("自动重复：关", "Auto repeat: OFF"), GREY) end
     updateBadge()
 end
 
@@ -1180,14 +1189,15 @@ do local okRec, errRec = pcall(function()
             end
             if c.CmdType == 0 or c.CmdType == 1 or c.CmdType == 2 then
                 local key = actor .. ":" .. c.CmdType
-                -- A fallback sent because MP ran short must not replace the W turn it stood in for.
+                -- A fallback sent because MP ran short, or a command Smart mode picked, must not
+                -- replace the player's own record.
                 if Rep.fallbackKey == key then
                     Rep.fallbackKey = nil
                 else
                     Rep.records[key] = c
+                    -- Keep the last single ability too, as a fallback when a W turn can't be paid for.
+                    if #c.items == 1 and not c.items[1].isUseItem then Rep.single[key] = c end
                 end
-                -- Keep the last single ability too, as a fallback when a W turn can't be paid for.
-                if #c.items == 1 and not c.items[1].isUseItem then Rep.single[actor .. ":" .. c.CmdType] = c end
                 countRecords()
             end
         end)
@@ -1454,6 +1464,18 @@ local function pickTargets(source, bfl, actor, it)
     return {}
 end
 
+-- Smart mode for auto repeat (Scripts/smart_battle.lua): picks skills by the enemies' weaknesses.
+do
+    local okS, mod = pcall(require, "smart_battle")
+    if okS and type(mod) == "table" then
+        mod.init({ cfg = function() return cfg end, outList = outList, skillInfo = skillInfo, hpRatio = hpRatio,
+                   rowStructName = rowStructName })
+        Rep.smart = mod
+    else
+        log("smart auto: module not loaded: %s", tostring(mod))
+    end
+end
+
 -- Re-send the current actor's last command.
 -- Returns true, note, summary when sent (note explains a fallback), or false, reason.
 local function replay(source)
@@ -1475,12 +1497,24 @@ local function replay(source)
         return false, tr("这个角色处于" .. s[1] .. "状态，不自动重复，请手动选择",
             "This character is " .. s[2] .. "; not repeating, choose a command")
     end
-    local key = actor .. ":" .. currentPhase()
+    local phase = currentPhase()
+    local key = actor .. ":" .. phase
     local c = Rep.records[key]
+    local bfl = battleLib()
+    -- Smart mode (auto only): a weakness skill, a heal, or the record with targets that don't
+    -- resist it. Its picks are not recorded, so "repeat" still means the player's own command.
+    if source == "auto" and cfg.SmartAuto and Rep.smart then
+        local okP, sc, why = pcall(Rep.smart.plan, bfl, actor, phase, c, Rep.single[key])
+        if not okP then
+            repLog("auto: smart error %s", tostring(sc))
+        elseif sc then
+            repLog("auto: unit %d smart %s", actor, tostring(why))
+            c = sc
+        end
+    end
     if not c then repLog("%s: unit %d has no recorded command (%s)", source, actor, key); return false, tr("这个角色还没有可重复的指令，请手动选择", "No command to repeat for this character yet; choose one") end
     if hasItem(c) then repLog("%s: unit %d last used an item, not repeated", source, actor); return false, tr("上次用的是道具，不会重复", "Last command was an item; not repeated") end
 
-    local bfl = battleLib()
     local okMenu, entry = menuEnabled(bfl, actor, c)
     if not okMenu then
         repLog("%s: unit %d command menu %d not available now", source, actor, entry)
@@ -1511,7 +1545,7 @@ local function replay(source)
     -- Work out every target first, so a turn is sent whole or not at all.
     local targetsFor = {}
     for i, it in ipairs(c.items) do
-        local targets = pickTargets(source, bfl, actor, it)
+        local targets = it.fixed and it.targets or pickTargets(source, bfl, actor, it)
         if #targets == 0 then
             repLog("%s: unit %d action %d has no valid target", source, actor, it.actionId)
             return false, tr("没有可用的目标，请手动选择", "No valid target; choose one")
@@ -1542,6 +1576,7 @@ local function replay(source)
         v.actionKeys[i].Category = k[1]
         v.actionKeys[i].ID = k[2]
     end
+    if c.smart then Rep.fallbackKey = key end
     disp:ExecuteEvent({ TagName = FName("Delegate.Battle.Cmd.Decide") }, v)
     local summary = describe(c)
     repLog("%s: unit %d repeated %s (type %d)", source, actor, summary, c.CmdType)
@@ -1552,7 +1587,7 @@ end
 if DEV_REPEAT then
     _G.FFRS_Repeat = { Rep = Rep, replay = replay, outOfControl = outOfControl, pickTargets = pickTargets,
                        describe = describe, totalCost = totalCost, skillInfo = skillInfo,
-                       midTurnChoice = midTurnChoice }
+                       midTurnChoice = midTurnChoice, smart = Rep.smart }
 end
 
 -- Repeat key / pad press. A press that lands while the acting unit's command list is closed for
