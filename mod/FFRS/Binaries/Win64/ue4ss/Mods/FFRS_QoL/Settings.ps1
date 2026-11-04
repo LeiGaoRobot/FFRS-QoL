@@ -65,6 +65,7 @@ $Defaults = [ordered]@{
     SmartSupport       = '1'
     SmartAuto          = '0'
     AutoHealBelow      = '40'
+    AutoEtherBelow     = '30'
     LibraScanAll       = '1'
     AutoLibra          = '0'
     AutoOpenSettings   = '1'
@@ -302,7 +303,7 @@ $chkSmartAuto = New-Object System.Windows.Forms.CheckBox
 $chkSmartAuto.Text = T '智能模式（打弱点）' 'Smart mode (weakness)'
 $chkSmartAuto.Location = New-Object System.Drawing.Point(14, 136); $chkSmartAuto.Size = New-Object System.Drawing.Size(234, 26)
 $grpRep.Controls.Add($chkSmartAuto)
-$tips.SetToolTip($chkSmartAuto, (T "自动重复时，按敌人的真实抗性选技能（没扫描过的敌人也一样）：`n有队友 HP 低于下面的百分比就先回复；能打弱点就用最强的弱点技能（W臂腕回合两次都用它）；`n否则沿用上次的指令，但不用会被减半、无效、吸收或反射的属性，必要时改为普通攻击。`nMP 不够时改用上次的单个技能或普通攻击；沉默时不用魔法，不对反射状态的目标放魔法。不用极限技和召唤。" "With auto repeat, picks skills from the enemies' real resistances (scanned or not):`nheals first when an ally is below the HP % on the right; otherwise the strongest skill that hits a weakness (both attacks of a W臂腕 turn);`notherwise the last command, but never an element a target halves, nullifies, absorbs or reflects (a basic attack instead).`nOut of MP: the last single ability or a basic attack. No spells while silenced or at targets with Reflect. Never uses Limit Bursts or summons."))
+$tips.SetToolTip($chkSmartAuto, (T "自动重复时，按敌人的真实抗性选技能（没扫描过的敌人也一样），每回合依次：`n有队友 HP 低于下面的百分比就先回复；自己 MP 低于 30% 就喝乙太；上还没生效的增攻 Buff 和蓄力；`n然后打出伤害最高的一回合：弱点算 1.5 倍，群体技能按命中的敌人数累加，自动组合 W臂腕、連續詠唱、W行動、魔力增幅、平衡崩壞；`n不用会被减半、无效、吸收或反射的属性。Boss 战 LB 够就放必杀技。`n没有能用的技能（没 MP、全被抗性挡住）时沿用上次的指令，再不行就普通攻击。沉默时不用魔法，不对反射状态的目标放魔法。不用召唤。" "With auto repeat, picks skills from the enemies' real resistances (scanned or not). Each turn, in order:`nheals when an ally is below the HP % on the right; drinks an Ether below 30% MP; casts attack buffs and charges that aren't active yet;`nthen the strongest turn: a weakness counts 1.5x, a group skill counts every target, and it builds W-Arm, Dual Cast, W Action, Magic Boost and Break Boost turns;`nnever an element a target halves, nullifies, absorbs or reflects. In boss fights, a Limit Burst whenever the LB pays for it.`nWith nothing to attack with (no MP, everything resisted): the last command, else a basic attack. No spells while silenced or at targets with Reflect. Never uses summons."))
 $grpRep.Controls.Add((New-Label (T 'HP 低于' 'Heal below') 250 136 102 26))
 $nuHeal = New-Object System.Windows.Forms.NumericUpDown
 $nuHeal.Minimum = 0; $nuHeal.Maximum = 95; $nuHeal.Increment = 5

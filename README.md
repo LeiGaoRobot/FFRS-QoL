@@ -30,11 +30,13 @@ It comes with a settings window, and changes apply in game within about a second
 - Smart targeting for support skills: heals go to the lowest-HP ally, buffs go to allies that don't have them yet
 - Smart mode for auto repeat (off by default): picks skills from the enemies' real resistances, also for enemies you never scanned
   - An ally below the heal threshold (default 40% HP, 0 = off) is healed first by a character who has a heal
-  - Otherwise the strongest affordable skill that hits a weakness, with no target that resists it; a recorded W-Arm turn keeps its W and uses that skill for both attacks
-  - Otherwise the last command, but never an element a target halves, nullifies, absorbs or reflects (a basic attack instead, also when there is no command yet)
-  - Out of MP: a W turn falls back to the last single ability, and if MP can't pay for anything it uses a basic attack, so auto never stalls
+  - Below 30% MP (setting `AutoEtherBelow` in config.ini, 0 = off), a character with MP skills drinks the biggest Ether that doesn't waste MP; without Ethers it carries on with cheaper skills
+  - Attack buffs and charges the character has (Honing Sense, the formations, Faith, Haste, Focus...) are cast when not active yet; defence buffs are left to you
+  - Then the strongest turn: a weakness counts 1.5x, a group skill counts every target (so groups win against several enemies), and it builds W-Arm, Dual Cast, W Action, Magic Boost and Break Boost turns itself; never an element a target halves, nullifies, absorbs or reflects
+  - In boss fights, a Limit Burst whenever the LB pays for it (on its own or inside W-Arm, one per turn)
+  - With nothing to attack with (no MP, everything resisted): the last command, else the last single ability, else a basic attack, so auto never stalls
   - No spells while silenced, and no spells at targets with Reflect (an ally with Reflect is healed with an ability like First Aid instead)
-  - Never uses Limit Bursts or summons, and its picks are not recorded: the repeat key still repeats your own last command
+  - Never uses summons, and its picks are not recorded: the repeat key still repeats your own last command
 - Limit Burst gain multiplier (0–10x) and an option to keep each character's LB gauge between battles
 - Libra scans all enemies: Libra and Mechamog Scan (and items that cast them) hit the whole enemy side, using the game's own scan, so the bestiary and weaknesses update as usual (on by default; only the skill table in memory changes)
 - Auto Libra: every enemy is scanned as the battle starts, weaknesses included, even on the first meeting (off by default; like a real Libra it is kept in your save)
@@ -177,7 +179,7 @@ standalone/FFRS_AbilitySlots/
 FINAL FANTASY RESONANCE（Steam PC 版）便利功能 MOD，基于 UE4SS，带中英文图形设置窗口，改完约 1 秒内生效。
 
 **功能**：开关随机遇敌 / 遇敌频率（0.1–5 倍）、宝箱和道具地图标记、经验 / 金钱 / MR / AP 倍率、掉落率倍率和稀有物品必掉、
-战斗加速、逃跑必定成功、重复上次指令 / 自动重复（简易自动战斗，支持 W 臂腕，混乱时交给玩家，攻击只打敌人）、自动重复的智能模式（按敌人真实抗性打弱点、避开抗性属性、HP 低于阈值先回复）、辅助技能智能选目标、
+战斗加速、逃跑必定成功、重复上次指令 / 自动重复（简易自动战斗，支持 W 臂腕，混乱时交给玩家，攻击只打敌人）、自动重复的智能模式（按敌人真实抗性打弱点、避开抗性属性、多个敌人优先群体技能、自动组合 W臂腕/連續詠唱/W行動/魔力增幅/平衡崩壞、上增攻 Buff、Boss 战放必杀技、HP 低于阈值先回复、MP 低于 30% 喝乙太）、辅助技能智能选目标、
 LB 充能倍率 / LB 槽跨战斗保留、Libra 扫描全体敌人（默认开）/ 自动 Libra（默认关，会记入存档）、添加物品、能力 AP 上限加成、能力栏扩展（每人 8–16 格，装备画面会自动缩小行高放得下）、物品持有上限最高 9999（商店也能买超过 99）。
 
 地图标记基于 ZArkadia 的 [Item and Chest Markers](https://www.nexusmods.com/finalfantasyresonance/mods/25)，经其许可规定署名使用。

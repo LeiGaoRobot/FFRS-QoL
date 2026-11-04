@@ -66,6 +66,7 @@ local Defaults = {
     SmartSupport       = true,
     SmartAuto          = false,  -- auto repeat picks skills by the enemies' weaknesses
     AutoHealBelow      = 40,     -- Smart mode heals an ally below this HP %; 0 = never
+    AutoEtherBelow     = 30,     -- Smart mode drinks an Ether below this MP %; 0 = never
     LibraScanAll       = true,
     AutoLibra          = false,
     AutoOpenSettings   = true,
@@ -82,7 +83,7 @@ local Defaults = {
 }
 local Order = { "EncountersEnabled", "EncounterRate", "ExpMultiplier", "MoneyMultiplier", "MRPointMultiplier", "DropMultiplier",
                 "RareAlwaysDrop", "APMultiplier", "BattleSpeedMultiplier", "AlwaysEscape", "ItemLimit", "APCapacityBonus", "AbilitySlots", "MapMarkers", "LBGainMultiplier", "PersistentLB", "AutoRepeat", "SmartSupport",
-                "SmartAuto", "AutoHealBelow", "LibraScanAll", "AutoLibra", "AutoOpenSettings", "UILanguage", "ToggleEncounterKey", "CycleMultiplierKey", "AutoRepeatKey", "RepeatCommandKey",
+                "SmartAuto", "AutoHealBelow", "AutoEtherBelow", "LibraScanAll", "AutoLibra", "AutoOpenSettings", "UILanguage", "ToggleEncounterKey", "CycleMultiplierKey", "AutoRepeatKey", "RepeatCommandKey",
                 "ToggleEncounterPad", "CycleMultiplierPad", "RepeatCommandPad", "AutoRepeatPad",
                 "CyclePresets" }
 
@@ -99,7 +100,7 @@ local function clampMult(x, fallback)
 end
 
 -- Whole-number settings with their own range (not multipliers).
-local IntRange = { ItemLimit = { 99, 9999 }, APCapacityBonus = { 0, 9999 }, AbilitySlots = { 8, 16 }, AutoHealBelow = { 0, 95 } }
+local IntRange = { ItemLimit = { 99, 9999 }, APCapacityBonus = { 0, 9999 }, AbilitySlots = { 8, 16 }, AutoHealBelow = { 0, 95 }, AutoEtherBelow = { 0, 95 } }
 local function clampInt(k, x)
     x = tonumber(x)
     if not x then return Defaults[k] end
@@ -1382,9 +1383,16 @@ end
 
 -- Readable summary of a recorded turn: "W臂腕：極·明鏡 + 極·明鏡" or one skill name.
 local function describe(c)
+    local function nameOf(it)
+        if it.isUseItem then
+            local ok, n = pcall(function() return StaticFindObject("/Script/mucha.Default__CPP_BFL_Item"):GetItemName(it.actionId):ToString() end)
+            if ok and n and tostring(n) ~= "" then return tostring(n) end
+        end
+        return skillName(it.actionId)
+    end
     local subs = {}
-    for i = 2, #c.items do subs[#subs + 1] = skillName(c.items[i].actionId) end
-    local first = skillName(c.items[1].actionId)
+    for i = 2, #c.items do subs[#subs + 1] = nameOf(c.items[i]) end
+    local first = nameOf(c.items[1])
     if #subs == 0 then return first end
     return first .. tr("：", ": ") .. table.concat(subs, " + ")
 end
@@ -1403,11 +1411,12 @@ local function skillCost(bfl, actor, it)
     return info and info.cost or 0
 end
 
--- MP for the whole turn: a W command costs its own MP plus each ability it fires.
+-- MP for the whole turn: a W command costs its own MP plus each ability it fires. Items and
+-- Limit Bursts (menu 10; GetSkillCost gives their LB) cost no MP.
 local function totalCost(bfl, actor, c)
     local sum = 0
     for _, it in ipairs(c.items) do
-        if not it.isUseItem then sum = sum + skillCost(bfl, actor, it) end
+        if not it.isUseItem and it.pId ~= 10 then sum = sum + skillCost(bfl, actor, it) end
     end
     return sum
 end
@@ -1421,6 +1430,7 @@ end
 -- entry), not an individual skill, so check the menu the command came from.
 local function menuEnabled(bfl, actor, c)
     local entry = (c.CommandId ~= -1) and c.CommandId or c.items[1].actionId
+    if entry == 10 then return true, entry end   -- the Limit list: IsEnableCommand always says no
     local ok, usable = pcall(function() return bfl:IsEnableCommand(actor, entry) end)
     return not (ok and usable == false), entry
 end
@@ -1513,7 +1523,7 @@ local function replay(source)
         end
     end
     if not c then repLog("%s: unit %d has no recorded command (%s)", source, actor, key); return false, tr("这个角色还没有可重复的指令，请手动选择", "No command to repeat for this character yet; choose one") end
-    if hasItem(c) then repLog("%s: unit %d last used an item, not repeated", source, actor); return false, tr("上次用的是道具，不会重复", "Last command was an item; not repeated") end
+    if hasItem(c) and not c.smart then repLog("%s: unit %d last used an item, not repeated", source, actor); return false, tr("上次用的是道具，不会重复", "Last command was an item; not repeated") end
 
     local okMenu, entry = menuEnabled(bfl, actor, c)
     if not okMenu then

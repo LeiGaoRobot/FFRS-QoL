@@ -64,7 +64,7 @@ local items = {
     { key = "SmartSupport", label = "Smart targets for support skills", type = "toggle", default = true,
       help = "When repeating, heals go to the ally with the lowest HP and buffs to allies that don't have them yet." },
     { key = "SmartAuto", label = "Smart mode (weaknesses)", type = "toggle", default = false,
-      help = "Auto repeat picks skills from the enemies' real resistances, scanned or not: heals an ally below the threshold first, otherwise the strongest skill that hits a weakness (both attacks of a W-Arm turn), otherwise the last command, never with an element a target halves, nullifies, absorbs or reflects (a basic attack instead). Never uses Limit Bursts or summons." },
+      help = "Auto repeat picks skills from the enemies' real resistances, scanned or not. Each turn: heals an ally below the threshold, drinks an Ether below 30% MP, casts attack buffs that aren't active yet, then the strongest turn (weakness 1.5x, group skills count every target, W-Arm / Dual Cast / W Action / Magic and Break Boost combos), never with an element a target halves, nullifies, absorbs or reflects. Limit Bursts in boss fights. With nothing to attack with: the last command, else a basic attack. Never uses summons." },
     { key = "AutoHealBelow", label = "Smart mode: heal below HP %", type = "number", min = 0, max = 95, step = 5, default = 40,
       help ="In Smart mode, a character with a heal uses it first when an ally's HP is below this. 0 = never." },
 

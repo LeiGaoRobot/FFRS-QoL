@@ -1,11 +1,17 @@
 -- Smart auto battle for FFRS QoL (loaded by main.lua; used by auto repeat in Smart mode).
 -- Picks the acting character's command from the enemies' real elemental resistances, which the
 -- game knows even for enemies that were never scanned:
---   1. an ally below the heal threshold -> the strongest affordable single-target heal on them
---   2. a skill that hits a weakness and that no target resists -> the strongest one (a recorded
---      W臂腕 turn keeps its W and uses that skill for both of its attacks)
---   3. otherwise the recorded command, unless a target would halve, nullify, absorb or reflect its
---      element -> then a basic attack (also when there is no record yet)
+--   1. an ally below the heal threshold -> the strongest affordable heal that reaches them
+--   1b. own MP below AutoEtherBelow (default 30%) and it has skills that cost MP -> an ether
+--   2. an attack buff or charge the character has and that isn't active yet (敏銳, 陣, 信心,
+--      急速, 凝氣, 累積魔力 ...)
+--   3. the strongest turn built from attack skills that no target resists (a weakness counts
+--      1.5x, a group skill counts every target): one skill, 連續詠唱 (two spells), W行動 (two
+--      non-spell attacks), 魔力增幅 + a magic attack, 平衡崩壞 + a physical attack, or W臂腕
+--      with two of those. In boss fights a Limit Burst the LB pays for always goes first (alone
+--      or inside W臂腕).
+--   4. with nothing to attack with, the recorded command unless a target would halve, nullify,
+--      absorb or reflect its element -> then a basic attack
 -- plan() returns a command in the same shape as main.lua's records; items with fixed = true
 -- already have their targets.
 local M = {}
@@ -18,35 +24,73 @@ local RES_WEAK, RES_HALVED = 1, 2          -- eResistance: 2 halved, 3 invalid, 
 local ATTR_LIMIT, ATTR_SUMMON = 5, 7       -- skillAttrType: never picked automatically
 local MENU_SKILLS, MENU_SUMMON, MENU_ITEMS, MENU_LIMIT = 1, 6, 7, 10
 local ATTR_MAGIC = 4                       -- spells: blocked by Silence, bounced by Reflect
+local DMG_PHYSICAL, DMG_MAGIC = 1, 2       -- eSkillDamageType
 local ST_SILENCE, ST_REFLECT = 4, 32       -- eUnitStatusCondition
-local CAT_SKILL = 1                        -- eActionCategory.Skill
-local W_ARM = 400650                       -- W臂腕: any two commands
+local CAT_SKILL, CAT_ITEM = 1, 2           -- eActionCategory
+local W_ARM = 400650                       -- W臂腕: any two commands (each may be a boosted attack)
+local DUAL_CAST = 400730                   -- 連續詠唱: two spells
+local W_ACTION = 400710                    -- W行動: two attacks that aren't spells
+local MAGIC_BOOST = 400660                 -- 魔力增幅: next magic attack x2 damage, x1.5 MP
+local BREAK_BOOST = 400700                 -- 平衡崩壞: next physical attack x2 break damage, x1.5 MP
+local CHARGE_ANY, CHARGE_MAGIC = 400460, 400630   -- 凝氣 (next attack), 累積魔力 (next magic attack)
 local WEAK_BONUS = 1.5
+local BOOST_MP = 1.5
+local BREAK_VALUE = 1.25                   -- break damage, not HP damage: worth a little more
+local CHARGE_TIME = 120                    -- seconds a charge waits for the character's next turn
+-- Attack buffs used when not active: attack/magic/break up, haste, boost and the characters'
+-- own damage stances (eUnitStatusCondition). Defence buffs are left out.
+local BUFF_STATUS = { [24] = true, [26] = true, [28] = true, [33] = true, [37] = true, [41] = true,
+    [51] = true, [52] = true, [53] = true, [71] = true, [72] = true, [73] = true, [74] = true,
+    [75] = true, [76] = true, [77] = true, [78] = true, [80] = true, [81] = true, [83] = true, [84] = true }
 
 local D = nil     -- helpers from main.lua (init)
-local Info = nil  -- [skillId] = { el, mag, attr, rel, tgt, damage, cmd1, name }
+local Info = nil  -- [skillId] = { el, mag, attr, rel, tgt, damage, dmgType, buffs, cmd1, name }
+local Charged = {}  -- [unit] = os.clock() of the charge planned for its next turn
 
 function M.init(deps) D = deps end
 
 local function buildInfo()
-    local t = {}
+    local t, effects, bundles = {}, {}, {}
     for _, dt in ipairs(FindAllOf("DataTable") or {}) do
         pcall(function()
-            if D.rowStructName(dt) ~= "SKILL_DATA" then return end
-            dt:ForEachRow(function(_, row)
-                local cmd1 = false
-                row.belongCommandList:ForEach(function(_, e) if e:get() == MENU_SKILLS then cmd1 = true end end)
-                local okN, name = pcall(function() return row.Name:ToString() end)
-                t[row.ID] = {
-                    el = row.element, mag = row.magnification or 0, attr = row.skillAttrType,
-                    rel = row.defaultTargetRelation, tgt = row.TargetType, cmd1 = cmd1,
-                    reflectPen = row.isReflectPenetration and true or false,
-                    damage = row.skillEffectType == EFFECT_DAMAGE_RECOVERY and row.parameterType == PARAM_HP
-                        and row.parameterVariationType == VAR_DECREASE,
-                    name = okN and tostring(name) or tostring(row.ID),
-                }
-            end)
+            local struct = D.rowStructName(dt)
+            if struct == "SKILL_EFFECT_DATA" then
+                dt:ForEachRow(function(_, row) effects[row.ID] = row.statusCondition end)
+            elseif struct == "SKILL_DATA" then
+                dt:ForEachRow(function(_, row)
+                    local cmd1 = false
+                    row.belongCommandList:ForEach(function(_, e) if e:get() == MENU_SKILLS then cmd1 = true end end)
+                    local ids = {}
+                    pcall(function()
+                        row.effectBundleList:ForEach(function(_, e)
+                            local b = e:get()
+                            if b.effectId > 0 and b.targetRelation == REL_FRIENDLIES then ids[#ids + 1] = b.effectId end
+                        end)
+                    end)
+                    bundles[row.ID] = ids
+                    local okN, name = pcall(function() return row.Name:ToString() end)
+                    t[row.ID] = {
+                        el = row.element, mag = row.magnification or 0, attr = row.skillAttrType,
+                        rel = row.defaultTargetRelation, tgt = row.TargetType, cmd1 = cmd1,
+                        reflectPen = row.isReflectPenetration and true or false,
+                        damage = row.skillEffectType == EFFECT_DAMAGE_RECOVERY and row.parameterType == PARAM_HP
+                            and row.parameterVariationType == VAR_DECREASE,
+                        dmgType = row.DamageType, status = row.statusCondition,
+                        name = okN and tostring(name) or tostring(row.ID),
+                    }
+                end)
+            end
         end)
+    end
+    -- Attack buff statuses a friendly skill gives (on the row or through its effects).
+    for id, s in pairs(t) do
+        local b = {}
+        if BUFF_STATUS[s.status] then b[s.status] = true end
+        for _, eid in ipairs(bundles[id] or {}) do
+            local st = effects[eid]
+            if st and BUFF_STATUS[st] then b[st] = true end
+        end
+        if next(b) and s.rel == REL_FRIENDLIES and not s.damage then s.buffs = b end
     end
     if next(t) then Info = t end
 end
@@ -76,7 +120,7 @@ end
 local function turnCost(ctx, c)
     local sum = 0
     for _, it in ipairs(c.items) do
-        if not it.isUseItem then sum = sum + cost(ctx, it.actionId, it.IsAll) end
+        if not it.isUseItem and it.pId ~= MENU_LIMIT then sum = sum + cost(ctx, it.actionId, it.IsAll) end
     end
     return sum
 end
@@ -156,10 +200,17 @@ local function unitContext(bfl, actor, cache)
     local own = {}
     for _, id in ipairs(D.outList(function(t) p:GetActiveSkillList(t) end)) do own[id] = true end
     local okSkills, okVision = enabled(MENU_SKILLS), vision ~= nil and enabled(vision)
+    local okLb, lb = pcall(function() return p:GetLimitBurstPoint() end)
+    ctx.lb = (okLb and type(lb) == "number") and lb or 0
+    ctx.itemsOk = contains(menus, MENU_ITEMS) and enabled(MENU_ITEMS)
+    -- Limit Bursts sit behind their own button, not in GetActionList (IsEnableCommand(10) is
+    -- always false); LB decides whether one can be used.
+    ctx.limits = {}
     for _, id in ipairs(D.outList(function(t) p:GetActiveSkillListWithVision(t) end)) do
         local s = info(id)
         if s then
             if s.attr == 1 and s.damage and not ctx.basic then ctx.basic = id end   -- 戰鬥
+            if s.attr == ATTR_LIMIT and s.damage then ctx.limits[#ctx.limits + 1] = id; ctx.menuOf[id] = MENU_LIMIT end
             if s.attr ~= ATTR_LIMIT and s.attr ~= ATTR_SUMMON and not (ctx.silenced and s.attr == ATTR_MAGIC) then
                 local menu = nil
                 if own[id] then
@@ -175,51 +226,71 @@ local function unitContext(bfl, actor, cache)
     return ctx
 end
 
--- A damage skill with an element: its weakness score and targets, or nil when it hits no
--- weakness or any target would resist it.
+-- How much a hit on uid is worth: 1.5 on a weakness, 1 when neutral, nil when the target would
+-- halve, nullify, absorb or reflect it.
+local function factor(bfl, cache, s, uid)
+    if bounces(bfl, cache, s, uid) then return nil end
+    if not (s.el and s.el > 0) then return 1 end
+    local r = resist(bfl, cache, uid, s.el)
+    if r == RES_WEAK then return WEAK_BONUS end
+    if r >= RES_HALVED then return nil end
+    return 1
+end
+
+-- A single or group damage skill: { id, targets, score, weak }, or nil when it can't hit
+-- anything at full strength. A group skill counts every target, so it wins against several
+-- enemies; one target that resists rules it out.
 local function evaluate(bfl, ctx, id, cache)
     local s = info(id)
-    if not (s and s.damage and s.rel == REL_ENEMIES and s.el and s.el > 0) then return nil end
+    if not (s and s.damage and s.rel == REL_ENEMIES) then return nil end
     if s.tgt ~= TGT_SINGLE and s.tgt ~= TGT_GROUP then return nil end
     local cands = targetsOf(bfl, ctx.actor, id, REL_ENEMIES)
     if #cands == 0 then return nil end
     if s.tgt == TGT_SINGLE then
-        local weak = {}
+        local bestF, pool = nil, {}
         for _, uid in ipairs(cands) do
-            if resist(bfl, cache, uid, s.el) == RES_WEAK and not bounces(bfl, cache, s, uid) then weak[#weak + 1] = uid end
+            local f = factor(bfl, cache, s, uid)
+            if f and (not bestF or f > bestF) then bestF, pool = f, { uid }
+            elseif f and f == bestF then pool[#pool + 1] = uid end
         end
-        if #weak == 0 then return nil end
-        return { id = id, targets = { lowestHp(bfl, weak) }, score = s.mag * WEAK_BONUS }
+        if not bestF then return nil end
+        return { id = id, targets = { lowestHp(bfl, pool) }, score = s.mag * bestF, weak = bestF > 1 }
     end
-    local weak = 0
+    local sum, weak = 0, false
     for _, uid in ipairs(cands) do
-        local r = resist(bfl, cache, uid, s.el)
-        if r >= RES_HALVED or bounces(bfl, cache, s, uid) then return nil end
-        if r == RES_WEAK then weak = weak + 1 end
+        local f = factor(bfl, cache, s, uid)
+        if not f then return nil end
+        sum = sum + f
+        if f > 1 then weak = true end
     end
-    if weak == 0 then return nil end
-    return { id = id, targets = cands, score = s.mag * (weak * WEAK_BONUS + (#cands - weak)) }
+    return { id = id, targets = cands, score = s.mag * sum, weak = weak }
 end
 
--- Keys are the menu path of every action in order: [cat:menu, cat:skill] per action; a basic
--- attack (no parent menu) and W's own basic attacks (parent = the W skill) add only the skill.
+-- Is a boss among the enemies?
+local function bossFight(bfl, ctx, cache)
+    if cache.boss == nil then
+        cache.boss = false
+        for _, uid in ipairs(targetsOf(bfl, ctx.actor, ctx.basic or 0, REL_ENEMIES)) do
+            local ok, b = pcall(function() return bfl:GetBattleUnitParameter(uid, true):IsBoss() end)
+            if ok and b == true then cache.boss = true end
+        end
+    end
+    return cache.boss
+end
+
+-- Keys are the menu path of every action in order: [cat:menu, cat:skill] per action. A basic
+-- attack (no parent menu) and an action chosen inside an earlier action's list (W's own basic
+-- attacks, the spells of 連續詠唱, the attack after 魔力增幅 ...) add only the skill.
 local function buildKeys(c)
-    local keys = {}
-    for i, it in ipairs(c.items) do
-        if it.pCat ~= 0 and not (i > 1 and it.pId == c.items[1].actionId) then keys[#keys + 1] = { it.pCat, it.pId } end
-        keys[#keys + 1] = { CAT_SKILL, it.actionId }
+    local keys, used = {}, {}
+    for _, it in ipairs(c.items) do
+        if it.pCat ~= 0 and not used[it.pId] then keys[#keys + 1] = { it.pCat, it.pId } end
+        keys[#keys + 1] = { it.isUseItem and CAT_ITEM or CAT_SKILL, it.actionId }
+        used[it.actionId] = true
     end
     return keys
 end
 M.buildKeys = buildKeys
-
-local function sameKeys(a, b)
-    if #a ~= #b then return false end
-    for i = 1, #a do
-        if a[i][1] ~= b[i][1] or a[i][2] ~= b[i][2] then return false end
-    end
-    return true
-end
 
 local function copyItem(it)
     local n = {}
@@ -291,36 +362,206 @@ local function planHeal(bfl, ctx, phase, rec, threshold, cache)
     return nil
 end
 
--- A recorded W turn with the best weakness skill in place of its attacks.
-local function planW(bfl, ctx, rec, best)
-    if #rec.items < 2 or not sameKeys(buildKeys(rec), rec.keys) then return nil end
-    local head = rec.items[1]
-    local hs = info(head.actionId)
-    if not hs or hs.tgt ~= TGT_SELF then return nil end
-    local bs = info(best.id)
-    local c = { CmdType = rec.CmdType, isNotConsume = rec.isNotConsume, doCalcOrder = rec.doCalcOrder,
-                CommandId = rec.CommandId, items = { copyItem(head) }, smart = true }
-    local total, changed = cost(ctx, head.actionId), 0
-    for i = 2, #rec.items do
-        local it = rec.items[i]
-        local s = info(it.actionId)
-        local n = copyItem(it)
-        -- Other multi-commands (連續詠唱 and the like) only take certain kinds of skills: there,
-        -- swap only for a skill of the same kind.
-        local fits = head.actionId == W_ARM or (s and s.attr == bs.attr)
-        if s and s.damage and s.rel == REL_ENEMIES and not it.isUseItem and fits then
-            n.actionId, n.targets, n.fixed, n.params, n.IsAll = best.id, best.targets, true, {}, false
-            n.pCat, n.pId = CAT_SKILL, ctx.menuOf[best.id]
-            total, changed = total + best.cost, changed + 1
-        else
-            if ctx.silenced and s and s.attr == ATTR_MAGIC then return nil end
-            total = total + cost(ctx, it.actionId, it.IsAll)
-        end
-        c.items[i] = n
+-- MP items (item id, MP restored), weakest first: 乙太, 渦輪乙太, 超級乙太.
+local ETHERS = { { id = 3, mp = 50 }, { id = 20, mp = 150 }, { id = 18, mp = 300 } }
+local itemLib = nil
+local function stock(id)
+    local ok, n = pcall(function()
+        if not (itemLib and itemLib:IsValid()) then itemLib = StaticFindObject("/Script/mucha.Default__CPP_BFL_Item") end
+        return itemLib:GetInventoryItemNum(id)
+    end)
+    return (ok and type(n) == "number") and n or 0
+end
+
+-- Below the MP threshold (percent of max), with skills that cost MP: drink the biggest
+-- ether that doesn't waste MP, else the smallest one in stock. Without one, the turn is planned
+-- as usual (cheaper skills, then a basic attack).
+local function planEther(bfl, ctx, phase, rec, below)
+    if below <= 0 or not ctx.itemsOk then return nil end
+    local ok, max = pcall(function() return bfl:GetBattleUnitParameter(ctx.actor, true):GetMaxParameterByType(PARAM_MP) end)
+    if not (ok and type(max) == "number" and max > 0) or ctx.mp * 100 >= below * max then return nil end
+    local usesMp = false   -- a character whose skills are all free has no use for MP
+    for _, id in ipairs(ctx.skills) do
+        local s = info(id)
+        if (s.damage or s.buffs or (D.skillInfo(id) or {}).kind == "heal") and cost(ctx, id) > 0 then usesMp = true; break end
     end
-    if changed == 0 or total > ctx.mp then return nil end
+    if not usesMp then return nil end
+    local gap, pick = max - ctx.mp, nil
+    for _, e in ipairs(ETHERS) do
+        if stock(e.id) > 0 then
+            if e.mp <= gap or not pick then pick = e end
+        end
+    end
+    if not pick then return nil end
+    local c = shell(ctx, phase, rec)
+    c.CommandId = MENU_ITEMS
+    c.items[1] = { actionId = pick.id, unit = ctx.actor, targets = { ctx.actor }, params = {}, isUseItem = true, IsAll = false,
+                   pCat = CAT_SKILL, pId = MENU_ITEMS, fixed = true }
     c.keys = buildKeys(c)
-    return c
+    local okN, nm = pcall(function() return itemLib:GetItemName(pick.id):ToString() end)
+    return c, string.format("item %s (MP %d/%d)", okN and tostring(nm) or tostring(pick.id), ctx.mp, max)
+end
+
+-- Turn building. A "strike" is one attack: { id, targets, score, cost }; a limit strike costs
+-- LB (lb) instead of MP. A "unit" is what one command slot does: a strike, 魔力增幅 / 平衡崩壞
+-- followed by a strike, or a Limit Burst. A turn is one unit, or a head (連續詠唱, W行動, W臂腕)
+-- with two of them.
+local function act(ctx, id, targets, pId)
+    return { actionId = id, unit = ctx.actor, targets = targets, params = {}, isUseItem = false, IsAll = false,
+             pCat = CAT_SKILL, pId = pId, fixed = true }
+end
+
+local function has(ctx, id) return ctx.menuOf[id] == MENU_SKILLS end
+
+local function units(ctx, strikes, limits)
+    local list = {}
+    for _, s in ipairs(limits) do
+        list[#list + 1] = { score = s.score, cost = 0, lb = s.lb, strikes = { s },
+                            items = function() return { act(ctx, s.id, s.targets, MENU_LIMIT) } end }
+    end
+    for _, s in ipairs(strikes) do
+        list[#list + 1] = { score = s.score, cost = s.cost, strikes = { s },
+                            items = function() return { act(ctx, s.id, s.targets, ctx.menuOf[s.id]) } end }
+        local si = info(s.id)
+        local boost = (si.dmgType == DMG_MAGIC and has(ctx, MAGIC_BOOST) and MAGIC_BOOST)
+            or (si.dmgType == DMG_PHYSICAL and has(ctx, BREAK_BOOST) and BREAK_BOOST) or nil
+        if boost then
+            local value = boost == MAGIC_BOOST and 2 or BREAK_VALUE
+            list[#list + 1] = { score = s.score * value, cost = cost(ctx, boost) + math.ceil(s.cost * BOOST_MP), strikes = { s },
+                                boost = boost,
+                                items = function() return { act(ctx, boost, { ctx.actor }, MENU_SKILLS), act(ctx, s.id, s.targets, boost) } end }
+        end
+    end
+    return list
+end
+
+-- The best pair from list (the same entry may be used twice) that fits in mp and lb, with at
+-- most one Limit Burst (exactly one when needLimit).
+local function bestPair(list, mp, lb, needLimit)
+    local best = nil
+    for i = 1, #list do
+        for j = i, #list do
+            local a, b = list[i], list[j]
+            local c = a.cost + b.cost
+            local n = (a.lb and 1 or 0) + (b.lb and 1 or 0)
+            if c <= mp and (a.lb or 0) + (b.lb or 0) <= (lb or 0) and n <= 1 and (n == 1 or not needLimit) then
+                local s = a.score + b.score
+                if not best or s > best.score or (s == best.score and c < best.cost) then best = { a, b, score = s, cost = c } end
+            end
+        end
+    end
+    return best
+end
+
+local function strikeLabel(s)
+    local t = (#s.targets == 1) and ("unit " .. s.targets[1]) or (#s.targets .. " enemies")
+    return name(s.id) .. " -> " .. t
+end
+
+local function turn(ctx, phase, rec, items, label)
+    local c = shell(ctx, phase, rec)
+    c.CommandId = items[1].pId
+    c.items = items
+    c.keys = buildKeys(c)
+    return c, label
+end
+
+-- The strongest affordable turn, or nil when no strike fits. When a Limit Burst can be paid for
+-- (boss fights), the turn always has one: on its own or inside W臂腕. The data's magnification
+-- undervalues limits, so they aren't left to the score.
+local function planAttack(ctx, phase, rec, strikes, limits)
+    local best = nil
+    local needLimit = #limits > 0
+    local function offer(score, mp, build)
+        if mp <= ctx.mp and (not best or score > best.score or (score == best.score and mp < best.cost)) then
+            best = { score = score, cost = mp, build = build }
+        end
+    end
+    local all = units(ctx, strikes, limits)
+    for _, u in ipairs(all) do
+        if (u.lb or 0) <= ctx.lb and (u.lb or not needLimit) then
+            offer(u.score, u.cost, function()
+                local label = (u.boost and (name(u.boost) .. " + ") or "") .. strikeLabel(u.strikes[1])
+                return turn(ctx, phase, rec, u.items(), "attack: " .. label)
+            end)
+        end
+    end
+    -- 連續詠唱 / W行動: the head, then two strikes chosen from its own list.
+    local function twoOf(head, keep)
+        if needLimit or not has(ctx, head) then return end
+        local pool = {}
+        for _, s in ipairs(strikes) do if keep(info(s.id)) then pool[#pool + 1] = s end end
+        local headCost = cost(ctx, head)
+        local p = bestPair(pool, ctx.mp - headCost)
+        if not p then return end
+        offer(p.score, p.cost + headCost, function()
+            local items = { act(ctx, head, { ctx.actor }, MENU_SKILLS), act(ctx, p[1].id, p[1].targets, head), act(ctx, p[2].id, p[2].targets, head) }
+            return turn(ctx, phase, rec, items, string.format("attack: %s + %s, %s", name(head), strikeLabel(p[1]), strikeLabel(p[2])))
+        end)
+    end
+    twoOf(DUAL_CAST, function(s) return s.attr == ATTR_MAGIC end)
+    twoOf(W_ACTION, function(s) return s.attr ~= ATTR_MAGIC end)
+    -- W臂腕: two commands, each a strike or a boosted strike.
+    if has(ctx, W_ARM) then
+        local wCost = cost(ctx, W_ARM)
+        local p = bestPair(all, ctx.mp - wCost, ctx.lb, needLimit)
+        if p then
+            offer(p.score, p.cost + wCost, function()
+                local items = { act(ctx, W_ARM, { ctx.actor }, MENU_SKILLS) }
+                local parts = {}
+                for k = 1, 2 do
+                    for _, it in ipairs(p[k].items()) do items[#items + 1] = it end
+                    parts[k] = (p[k].boost and (name(p[k].boost) .. " + ") or "") .. strikeLabel(p[k].strikes[1])
+                end
+                return turn(ctx, phase, rec, items, string.format("attack: %s + %s, %s", name(W_ARM), parts[1], parts[2]))
+            end)
+        end
+    end
+    if best then return best.build() end
+    return nil
+end
+
+-- An attack buff the character has that isn't active on its targets yet, or a charge before its
+-- next attack (only when it has something to hit then). A charge is planned once per two turns.
+local function planBuff(bfl, ctx, phase, rec, cache, strikes)
+    for _, id in ipairs(ctx.skills) do
+        local s = info(id)
+        if s and s.buffs then
+            local c = cost(ctx, id)
+            if c <= ctx.mp then
+                local cands = (s.tgt == TGT_SELF) and { ctx.actor } or targetsOf(bfl, ctx.actor, id, REL_FRIENDLIES)
+                local function lacks(uid)
+                    local st = statuses(bfl, cache, uid)
+                    for b in pairs(s.buffs) do if not st[b] then return true end end
+                    return false
+                end
+                local targets = nil
+                if s.tgt == TGT_SINGLE then
+                    -- the actor first, then the others in party order
+                    if contains(cands, ctx.actor) and lacks(ctx.actor) then targets = { ctx.actor }
+                    else for _, uid in ipairs(cands) do if lacks(uid) then targets = { uid }; break end end end
+                else
+                    for _, uid in ipairs(cands) do if lacks(uid) then targets = cands; break end end
+                end
+                if targets and #targets > 0 then
+                    local who = (#targets == 1) and ("unit " .. targets[1]) or (#targets .. " allies")
+                    return single(ctx, phase, rec, id, targets), string.format("buff %s -> %s", name(id), who)
+                end
+            end
+        end
+    end
+    local at = Charged[ctx.actor]
+    if at and os.clock() - at < CHARGE_TIME then Charged[ctx.actor] = nil; return nil end
+    if #strikes == 0 then return nil end
+    local magic = false
+    for _, s in ipairs(strikes) do if info(s.id).dmgType == DMG_MAGIC then magic = true end end
+    for _, id in ipairs({ CHARGE_ANY, CHARGE_MAGIC }) do
+        if has(ctx, id) and (id ~= CHARGE_MAGIC or magic) and cost(ctx, id) <= ctx.mp then
+            Charged[ctx.actor] = os.clock()
+            return single(ctx, phase, rec, id, { ctx.actor }), "charge " .. name(id)
+        end
+    end
+    return nil
 end
 
 -- The recorded command with targets that don't resist its element (or reflect its spell), or
@@ -370,23 +611,32 @@ function M.plan(bfl, actor, phase, rec, single1)
         local c, why = planHeal(bfl, ctx, phase, rec, threshold, cache)
         if c then return c, why end
     end
-    local best = nil
+    local ce, ewhy = planEther(bfl, ctx, phase, rec, tonumber(cfg.AutoEtherBelow) or 30)
+    if ce then return ce, ewhy end
+    local strikes = {}
     for _, id in ipairs(ctx.skills) do
         local e = evaluate(bfl, ctx, id, cache)
         if e then
             e.cost = cost(ctx, id)
-            if e.cost <= ctx.mp and (not best or e.score > best.score or (e.score == best.score and e.cost < best.cost)) then best = e end
+            if e.cost <= ctx.mp then strikes[#strikes + 1] = e end
         end
     end
-    if best then
-        local target = (#best.targets == 1) and ("unit " .. best.targets[1]) or (#best.targets .. " enemies")
-        if rec and #rec.items > 1 and not hasItem(rec) then
-            local w = planW(bfl, ctx, rec, best)
-            if w then return w, string.format("weakness: %s with %s x2 -> %s", name(rec.items[1].actionId), name(best.id), target) end
+    local limits = {}
+    if #ctx.limits > 0 and bossFight(bfl, ctx, cache) then
+        for _, id in ipairs(ctx.limits) do
+            local e = evaluate(bfl, ctx, id, cache)
+            if e then
+                e.lb = cost(ctx, id)
+                if e.lb <= ctx.lb then limits[#limits + 1] = e end
+            end
         end
-        return single(ctx, phase, rec, best.id, best.targets), string.format("weakness: %s -> %s", name(best.id), target)
     end
-    -- No weakness: the recorded turn, else the last single ability, else a basic attack.
+    local b, bwhy = planBuff(bfl, ctx, phase, rec, cache, strikes)
+    if b then return b, bwhy end
+    local a, awhy = planAttack(ctx, phase, rec, strikes, limits)
+    if a then return a, awhy end
+    -- Nothing to attack with (no MP, everything resisted): the recorded turn, else the last single
+    -- ability, else a basic attack.
     local reasons = { mp = "not enough MP", silence = "silenced", resist = "would be resisted" }
     local why = "no command to repeat"
     local tries = {}
@@ -398,8 +648,8 @@ function M.plan(bfl, actor, phase, rec, single1)
         else
             local c, fail = avoidResist(bfl, ctx, r, cache)
             if c then
-                if r == rec then return c, "no weakness: repeat" end
-                return c, "no weakness, " .. why .. ": last single ability"
+                if r == rec then return c, "no attack skill: repeat" end
+                return c, "no attack skill, " .. why .. ": last single ability"
             end
             why = "last command " .. (reasons[fail] or "unusable")
         end
