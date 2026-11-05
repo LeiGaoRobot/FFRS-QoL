@@ -1180,6 +1180,7 @@ do local okRec, errRec = pcall(function()
             end
             local actor = c.items[1].unit
             Rep.lastDecidedActor = actor
+            Rep.lastDecision = c   -- what 模仿 would repeat (Smart mode)
             Rep.decidedSinceMenu, Rep.subMenu, Rep.pendingPress = true, false, nil
             -- A confused/charmed/berserk unit's targets are not the player's choice: keep the
             -- previous record instead.
@@ -1479,7 +1480,7 @@ do
     local okS, mod = pcall(require, "smart_battle")
     if okS and type(mod) == "table" then
         mod.init({ cfg = function() return cfg end, outList = outList, skillInfo = skillInfo, hpRatio = hpRatio,
-                   rowStructName = rowStructName })
+                   rowStructName = rowStructName, lastDecision = function() return Rep.lastDecision end })
         Rep.smart = mod
     else
         log("smart auto: module not loaded: %s", tostring(mod))
@@ -1628,6 +1629,7 @@ do local okMenu, errMenu = pcall(function()
             if not Hud.inBattle then
                 Hud.inBattle = true; updateBadge()
                 Rep.menuActor, Rep.decidedSinceMenu = nil, true
+                Rep.lastDecision = nil
             end
             -- The same unit's list reopening before anything was decided is either the next step
             -- of a multi-command choice (W臂腕 and similar: left to the player) or the game going

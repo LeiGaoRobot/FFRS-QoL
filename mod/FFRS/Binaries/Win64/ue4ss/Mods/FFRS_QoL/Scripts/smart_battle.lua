@@ -3,13 +3,16 @@
 -- game knows even for enemies that were never scanned:
 --   1. an ally below the heal threshold -> the strongest affordable heal that reaches them
 --   1b. own MP below AutoEtherBelow (default 30%) and it has skills that cost MP -> an ether
---   2. an attack buff or charge the character has and that isn't active yet (敏銳, 陣, 信心,
---      急速, 凝氣, 累積魔力 ...)
+--   2. boss fights: 託付 (hand the gauge to an ally it completes a Limit Burst for) or 極限蓄力
+--      (when it completes the character's own); then attack buffs that aren't active yet (敏銳,
+--      信心, 急速 ...): 轉戰自如之策 before a formation, one formation at a time, and with W臂腕 two
+--      buffs (or a buff and an attack) per turn
+--   2b. any fight: a charge (凝氣, 累積魔力) before an attack
 --   3. the strongest turn built from attack skills that no target resists (a weakness counts
 --      1.5x, a group skill counts every target): one skill, 連續詠唱 (two spells), W行動 (two
 --      non-spell attacks), 魔力增幅 + a magic attack, 平衡崩壞 + a physical attack, or W臂腕
 --      with two of those. In boss fights a Limit Burst the LB pays for always goes first (alone
---      or inside W臂腕).
+--      or inside W臂腕). 模仿 instead when the turn decided just before is worth more.
 --   4. with nothing to attack with, the recorded command unless a target would halve, nullify,
 --      absorb or reflect its element -> then a basic attack
 -- plan() returns a command in the same shape as main.lua's records; items with fixed = true
@@ -33,6 +36,13 @@ local W_ACTION = 400710                    -- W行動: two attacks that aren't s
 local MAGIC_BOOST = 400660                 -- 魔力增幅: next magic attack x2 damage, x1.5 MP
 local BREAK_BOOST = 400700                 -- 平衡崩壞: next physical attack x2 break damage, x1.5 MP
 local CHARGE_ANY, CHARGE_MAGIC = 400460, 400630   -- 凝氣 (next attack), 累積魔力 (next magic attack)
+local STRATAGEM = 405120                   -- 轉戰自如之策: after a formation the character acts again
+-- 陣型, best first (the set 轉戰自如之策 names; 405030 and 405080 are Limit Burst formations, never
+-- cast here but seen as active). Only one is active at a time: a new one replaces it.
+local FORMATIONS = { 405110, 405060, 405070, 405030, 405080 }
+local MIMIC = 400330                       -- 模仿: repeats the turn decided just before
+local LB_PASS, LB_CHARGE = 403210, 400770  -- 託付 (own gauge to an ally), 極限蓄力 (own gauge +25%)
+local LB_CHARGE_RATE = 0.25                -- of one gauge bar (the smallest it could mean)
 local WEAK_BONUS = 1.5
 local BOOST_MP = 1.5
 local BREAK_VALUE = 1.25                   -- break damage, not HP damage: worth a little more
@@ -107,13 +117,23 @@ local function name(id)
 end
 
 local skillLib = nil
-local function cost(ctx, id, isAll)
+local function costFor(unitId, id, isAll)
     local ok, c = pcall(function()
         if not (skillLib and skillLib:IsValid()) then skillLib = StaticFindObject("/Script/mucha.Default__CPP_BFL_Skill") end
-        return skillLib:GetSkillCost(id, ctx.unitId, isAll and true or false)
+        return skillLib:GetSkillCost(id, unitId, isAll and true or false)
     end)
     if ok and type(c) == "number" and c >= 0 then return c end
     return math.huge
+end
+local function cost(ctx, id, isAll) return costFor(ctx.unitId, id, isAll) end
+
+local unitLib = nil
+local function oneGauge()
+    local ok, g = pcall(function()
+        if not (unitLib and unitLib:IsValid()) then unitLib = StaticFindObject("/Script/mucha.Default__CPP_BFL_Unit") end
+        return unitLib:GetLimitBurstPointOneGauge()
+    end)
+    return (ok and type(g) == "number" and g > 0) and g or 0
 end
 
 -- MP for a whole recorded turn (a W command costs its own MP plus each ability).
@@ -517,39 +537,220 @@ local function planAttack(ctx, phase, rec, strikes, limits)
             end)
         end
     end
-    if best then return best.build() end
+    if best then
+        local c, label = best.build()
+        return c, label, best.score
+    end
     return nil
 end
 
--- An attack buff the character has that isn't active on its targets yet, or a charge before its
--- next attack (only when it has something to hit then). A charge is planned once per two turns.
-local function planBuff(bfl, ctx, phase, rec, cache, strikes)
-    for _, id in ipairs(ctx.skills) do
-        local s = info(id)
-        if s and s.buffs then
-            local c = cost(ctx, id)
-            if c <= ctx.mp then
-                local cands = (s.tgt == TGT_SELF) and { ctx.actor } or targetsOf(bfl, ctx.actor, id, REL_FRIENDLIES)
-                local function lacks(uid)
-                    local st = statuses(bfl, cache, uid)
-                    for b in pairs(s.buffs) do if not st[b] then return true end end
-                    return false
-                end
-                local targets = nil
-                if s.tgt == TGT_SINGLE then
-                    -- the actor first, then the others in party order
-                    if contains(cands, ctx.actor) and lacks(ctx.actor) then targets = { ctx.actor }
-                    else for _, uid in ipairs(cands) do if lacks(uid) then targets = { uid }; break end end end
-                else
-                    for _, uid in ipairs(cands) do if lacks(uid) then targets = cands; break end end
-                end
-                if targets and #targets > 0 then
-                    local who = (#targets == 1) and ("unit " .. targets[1]) or (#targets .. " allies")
-                    return single(ctx, phase, rec, id, targets), string.format("buff %s -> %s", name(id), who)
+local function unitLabel(u)
+    return (u.boost and (name(u.boost) .. " + ") or "") .. strikeLabel(u.strikes[1])
+end
+
+-- W臂腕 with `first` ({ id, targets, cost }) and the strongest attack that still fits (a Limit
+-- Burst when limits has one), or nil without W臂腕 or the MP for both.
+local function wWithAttack(ctx, phase, rec, strikes, first, firstLabel, kind, limits)
+    if not has(ctx, W_ARM) then return nil end
+    local room = ctx.mp - cost(ctx, W_ARM) - first.cost
+    local lim = limits or {}
+    local bestU = nil
+    for _, u in ipairs(units(ctx, strikes, lim)) do
+        if u.cost <= room and (u.lb or 0) <= ctx.lb and (u.lb or #lim == 0)
+            and (not bestU or u.score > bestU.score) then bestU = u end
+    end
+    if not bestU then return nil end
+    local items = { act(ctx, W_ARM, { ctx.actor }, MENU_SKILLS), act(ctx, first.id, first.targets, ctx.menuOf[first.id]) }
+    for _, it in ipairs(bestU.items()) do items[#items + 1] = it end
+    return turn(ctx, phase, rec, items, string.format("%s: %s + %s, %s", kind, name(W_ARM), firstLabel, unitLabel(bestU)))
+end
+
+-- The Limit Burst gauge of an ally and the cheapest damage Limit Burst it has (nil: none).
+local function allyLimit(bfl, uid)
+    local ok, lb, need = pcall(function()
+        local p = bfl:GetBattleUnitParameter(uid, true)
+        local unitId, need = p:GetUnitId(), nil
+        for _, id in ipairs(D.outList(function(t) p:GetActiveSkillListWithVision(t) end)) do
+            local s = info(id)
+            if s and s.attr == ATTR_LIMIT and s.damage then
+                local c = costFor(unitId, id)
+                if not need or c < need then need = c end
+            end
+        end
+        return p:GetLimitBurstPoint(), need
+    end)
+    if ok and type(lb) == "number" then return lb, need end
+    return 0, nil
+end
+
+-- Boss fights: 託付 when the character has no damage Limit Burst of its own and its gauge
+-- completes an ally's; 極限蓄力 when it completes the character's own (inside W臂腕 with an attack
+-- when it can).
+local function planLimitHelp(bfl, ctx, phase, rec, strikes)
+    if ctx.menuOf[LB_PASS] and #ctx.limits == 0 and ctx.lb > 0 and cost(ctx, LB_PASS) <= ctx.mp then
+        for _, uid in ipairs(targetsOf(bfl, ctx.actor, LB_PASS, REL_FRIENDLIES)) do
+            if uid ~= ctx.actor then
+                local lb, need = allyLimit(bfl, uid)
+                if need and lb < need and lb + ctx.lb >= need then
+                    return single(ctx, phase, rec, LB_PASS, { uid }),
+                        string.format("pass LB %s -> unit %d (%d + %d of %d)", name(LB_PASS), uid, lb, ctx.lb, need)
                 end
             end
         end
     end
+    if ctx.menuOf[LB_CHARGE] and #ctx.limits > 0 then
+        local need = nil
+        for _, id in ipairs(ctx.limits) do
+            local c = cost(ctx, id)
+            if not need or c < need then need = c end
+        end
+        local c = cost(ctx, LB_CHARGE)
+        if ctx.lb < need and ctx.lb + oneGauge() * LB_CHARGE_RATE >= need and c <= ctx.mp then
+            local first = { id = LB_CHARGE, targets = { ctx.actor }, cost = c }
+            local w, wl = wWithAttack(ctx, phase, rec, strikes, first, name(LB_CHARGE), "LB")
+            if w then return w, wl end
+            return single(ctx, phase, rec, LB_CHARGE, { ctx.actor }), string.format("LB %s (%d of %d)", name(LB_CHARGE), ctx.lb, need)
+        end
+    end
+    return nil
+end
+
+-- What 模仿 would be worth now: the turn decided just before (another character's, usually),
+-- scored like our own attacks against the enemies still standing. 0 when it has no attack, or
+-- a target would resist it.
+local function mimicScore(bfl, ctx, cache)
+    if not (ctx.menuOf[MIMIC] and D.lastDecision) or cost(ctx, MIMIC) > ctx.mp then return 0 end
+    local c = D.lastDecision()
+    if not (c and c.items and c.items[1]) or c.items[1].actionId == MIMIC then return 0 end
+    local enemies = targetsOf(bfl, ctx.actor, ctx.basic or 0, REL_ENEMIES)
+    local alive = {}
+    for _, uid in ipairs(enemies) do alive[uid] = true end
+    local sum, mult = 0, 1
+    for _, it in ipairs(c.items) do
+        if it.actionId == MAGIC_BOOST then mult = 2
+        elseif it.actionId == BREAK_BOOST then mult = BREAK_VALUE
+        else
+            local s = info(it.actionId)
+            if s and s.damage and s.rel == REL_ENEMIES then
+                local part = 0
+                for _, uid in ipairs((s.tgt == TGT_GROUP) and enemies or it.targets) do
+                    if alive[uid] then
+                        local f = factor(bfl, cache, s, uid)
+                        if not f then return 0 end
+                        part = part + f
+                    end
+                end
+                sum = sum + s.mag * part * mult
+            end
+            mult = 1
+        end
+    end
+    return sum
+end
+
+local IS_FORMATION = {}
+for _, id in ipairs(FORMATIONS) do IS_FORMATION[id] = true end
+
+-- Allies an attack buff would reach that lack it: the actor first for a single-target buff,
+-- every target for a group buff. nil when nobody lacks it.
+local function buffTargets(bfl, ctx, cache, id, s)
+    local cands = (s.tgt == TGT_SELF) and { ctx.actor } or targetsOf(bfl, ctx.actor, id, REL_FRIENDLIES)
+    local function lacks(uid)
+        local st = statuses(bfl, cache, uid)
+        for b in pairs(s.buffs) do if not st[b] then return true end end
+        return false
+    end
+    if s.tgt == TGT_SINGLE then
+        if contains(cands, ctx.actor) and lacks(ctx.actor) then return { ctx.actor } end
+        for _, uid in ipairs(cands) do if lacks(uid) then return { uid } end end
+        return nil
+    end
+    for _, uid in ipairs(cands) do if lacks(uid) then return cands end end
+    return nil
+end
+
+local function formationActive(bfl, ctx, cache)
+    local st = statuses(bfl, cache, ctx.actor)
+    for _, id in ipairs(FORMATIONS) do
+        local s = info(id)
+        if s and s.buffs then for b in pairs(s.buffs) do if st[b] then return true end end end
+    end
+    return false
+end
+
+-- Attack buffs the character can cast now that aren't active yet, in casting order:
+-- 轉戰自如之策, then one formation (the best it has, and only while none is active), then the rest.
+local function missingBuffs(bfl, ctx, cache)
+    local list = {}
+    local function try(id)
+        local s = info(id)
+        if not (ctx.menuOf[id] and ctx.menuOf[id] ~= MENU_LIMIT and s and s.buffs) then return false end
+        local c = cost(ctx, id)
+        if c > ctx.mp then return false end
+        local t = buffTargets(bfl, ctx, cache, id, s)
+        if not t then return false end
+        list[#list + 1] = { id = id, targets = t, cost = c, buffs = s.buffs }
+        return true
+    end
+    -- 轉戰自如之策 only pays when a formation follows it.
+    if not formationActive(bfl, ctx, cache) then
+        local n = #list
+        try(STRATAGEM)
+        local had = #list > n
+        local got = false
+        for _, id in ipairs(FORMATIONS) do if try(id) then got = true; break end end
+        if had and not got then table.remove(list, n + 1) end
+    end
+    for _, id in ipairs(ctx.skills) do
+        if id ~= STRATAGEM and not IS_FORMATION[id] then try(id) end
+    end
+    -- Two buffs with the same effect (急速 and 大急速): keep the one that reaches more allies.
+    local keep = {}
+    for i, e in ipairs(list) do
+        local drop = false
+        for j, f in ipairs(list) do
+            if i ~= j and (#f.targets > #e.targets or (#f.targets == #e.targets and j < i)) then
+                for b in pairs(e.buffs) do if f.buffs[b] then drop = true end end
+            end
+        end
+        if not drop then keep[#keep + 1] = e end
+    end
+    return keep
+end
+
+local function buffLabel(b)
+    return name(b.id) .. " -> " .. ((#b.targets == 1) and ("unit " .. b.targets[1]) or (#b.targets .. " allies"))
+end
+
+-- Boss fights: the first missing attack buff. With W臂腕 it takes a second missing buff, else
+-- an attack, in the same turn. A Limit Burst the gauge pays for comes first: then only W臂腕
+-- with the buff and the limit.
+local function planBuff(bfl, ctx, phase, rec, cache, strikes, limits)
+    local list = missingBuffs(bfl, ctx, cache)
+    local a = list[1]
+    if not a then return nil end
+    if #limits > 0 then
+        return wWithAttack(ctx, phase, rec, strikes, a, buffLabel(a), "buff", limits)
+    end
+    if has(ctx, W_ARM) then
+        local room = ctx.mp - cost(ctx, W_ARM) - a.cost
+        for k = 2, #list do
+            local b = list[k]
+            if b.cost <= room then
+                local items = { act(ctx, W_ARM, { ctx.actor }, MENU_SKILLS), act(ctx, a.id, a.targets, ctx.menuOf[a.id]),
+                                act(ctx, b.id, b.targets, ctx.menuOf[b.id]) }
+                return turn(ctx, phase, rec, items, string.format("buff: %s + %s, %s", name(W_ARM), buffLabel(a), buffLabel(b)))
+            end
+        end
+        local w, wl = wWithAttack(ctx, phase, rec, strikes, a, buffLabel(a), "buff")
+        if w then return w, wl end
+    end
+    return single(ctx, phase, rec, a.id, a.targets), "buff " .. buffLabel(a)
+end
+
+-- Any fight: a charge before the character's next attack (only when it has something to hit
+-- then). A charge is planned once per two turns.
+local function planCharge(ctx, phase, rec, strikes)
     local at = Charged[ctx.actor]
     if at and os.clock() - at < CHARGE_TIME then Charged[ctx.actor] = nil; return nil end
     if #strikes == 0 then return nil end
@@ -631,9 +832,25 @@ function M.plan(bfl, actor, phase, rec, single1)
             end
         end
     end
-    local b, bwhy = planBuff(bfl, ctx, phase, rec, cache, strikes)
-    if b then return b, bwhy end
-    local a, awhy = planAttack(ctx, phase, rec, strikes, limits)
+    -- Gauge help and buffs only pay off in long fights (boss fights); charges clear normal fights
+    -- faster too.
+    if bossFight(bfl, ctx, cache) then
+        local l, lwhy = planLimitHelp(bfl, ctx, phase, rec, strikes)
+        if l then return l, lwhy end
+        local b, bwhy = planBuff(bfl, ctx, phase, rec, cache, strikes, limits)
+        if b then return b, bwhy end
+    end
+    local ch, chwhy = planCharge(ctx, phase, rec, strikes)
+    if ch then return ch, chwhy end
+    local a, awhy, ascore = planAttack(ctx, phase, rec, strikes, limits)
+    -- 模仿 when the turn just decided is worth at least the character's own best: it costs no MP
+    -- (never instead of a Limit Burst).
+    if #limits == 0 then
+        local m = mimicScore(bfl, ctx, cache)
+        if m > 0 and m >= (ascore or 0) then
+            return single(ctx, phase, rec, MIMIC, { ctx.actor }), string.format("mimic %s (%.0f vs %.0f)", name(MIMIC), m, ascore or 0)
+        end
+    end
     if a then return a, awhy end
     -- Nothing to attack with (no MP, everything resisted): the recorded turn, else the last single
     -- ability, else a basic attack.
